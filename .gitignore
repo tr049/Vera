@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# uv virtual environment (NOTE: uv.lock and .python-version ARE committed)
+.venv/
+venv/
+
+# Secrets / local env — config.example.env stays tracked as the template
+.env
+**/.env
+
+# Runtime telemetry (talk_server.py writes logs/voice-events.jsonl here)
+logs/
+
+# Node deps for the LiveKit browser demo
+node_modules/
+
+# macOS / JetBrains
+.DS_Store
+.idea/
+
+# Internal docs — kept locally, excluded from the published repository
+ARCHITECTURE.md
+CLAUDE.md

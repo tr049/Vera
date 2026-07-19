@@ -1,0 +1,35 @@
+[project]
+name = "aurora-voice-agent"
+version = "0.1.0"
+description = "Aurora — hotel-reservations voice agent: VAD -> STT -> LLM+tools -> RAG -> TTS"
+readme = "README.md"
+requires-python = ">=3.10"
+
+# The offline mock + `voice_loop.py --text` path deliberately needs ZERO third-party
+# packages (openai is lazy-imported; python-dotenv is optional). So base deps are empty:
+# `uv sync` yields an empty venv that can already run smoke_test / evals / --text.
+dependencies = []
+
+[project.optional-dependencies]
+# Live Groq/OpenAI provider (one OpenAI-dialect client covers both) + .env loading.
+live = ["openai>=1.30", "python-dotenv>=1.0"]
+
+# Real-microphone mode. NOTE: `setuptools` is load-bearing under uv — uv venvs are
+# seedless (no pip/setuptools), and `webrtcvad` does `import pkg_resources` at runtime.
+# If webrtcvad fails to build on a machine without a C compiler, swap it for the
+# prebuilt wheel: replace "webrtcvad>=2.0" with "webrtcvad-wheels>=2.0".
+audio = ["sounddevice>=0.4", "webrtcvad>=2.0", "numpy>=1.24", "setuptools<81"]
+
+# Browser (LiveKit) demo backend. The Node side (livekit/package.json, livekit-client)
+# is NOT managed by uv — run `npm install` in livekit/ separately.
+livekit = ["livekit-api>=0.7", "openai>=1.30", "python-dotenv>=1.0"]
+
+# Non-default group (not named `dev`, so bare `uv sync` stays empty). Enable with
+# `uv sync --group lint`. The test suites are stdlib unittest, so no pytest is needed.
+[dependency-groups]
+lint = ["ruff>=0.6"]
+
+[tool.uv]
+# Flat modules in pipeline/ are imported via sys.path (not an installable package),
+# so do not build/install this project into the venv — only manage its dependencies.
+package = false

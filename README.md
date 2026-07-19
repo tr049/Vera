@@ -3,6 +3,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Packaged with uv](https://img.shields.io/badge/packaged%20with-uv-6340ac)
 ![LLM](https://img.shields.io/badge/LLM-OpenAI%20%7C%20Groq%20%7C%20offline%20mock-2ea44f)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 **By [Taimoor Raza](https://github.com/tr049)**
 
@@ -163,8 +164,8 @@ pyproject.toml   uv project (extras: live / audio / livekit)
 
 ## Author
 
-**Taimoor Raza**  ·  [github.com/tr049](https://github.com/tr049)  ·  [taimoor.raza7@gmail.com](mailto:taimoor.raza7@gmail.com)
+**Taimoor Raza**  ·  [github.com/tr049](https://github.com/tr049)
 
 ## License
 
-No license yet — add a `LICENSE` file (for example, MIT) before making the repository public.
+Released under the [MIT License](LICENSE).

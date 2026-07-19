@@ -290,7 +290,7 @@ def run_tool(name: str, args: dict) -> dict:
         room_key = _normalize_room_type(args.get("room_type")) or "standard"
         room = _ROOMS[room_key]
         return {
-            "result": "Booking confirmed. Confirmation AH-4827 for "
+            "result": "Booking confirmed. Confirmation VH-4827 for "
                       f"{args.get('guest_name')} in a {room['name']} from "
                       f"{args.get('check_in')} to {args.get('check_out')} for "
                       f"{args.get('guests')} guest(s). Confirmation sent to "

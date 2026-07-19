@@ -45,7 +45,7 @@ def main() -> None:
     # Booking path -> confirmation
     turn(
         "Yes, book it for Priya Shah at priya@example.com.",
-        expect_in="AH-4827",
+        expect_in="VH-4827",
     )
     # Transfer path -> SIP REFER
     turn("Actually, connect me to a person", expect_action="transfer")

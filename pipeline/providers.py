@@ -230,7 +230,7 @@ class MockProvider:
                 return _mk_text(f"{result} Would you like me to book one of these?")
             if result.lower().startswith("booking confirmed"):
                 if spanish:
-                    confirmation = re.search(r"AH-\d+", result)
+                    confirmation = re.search(r"VH-\d+", result)
                     code = confirmation.group(0) if confirmation else "confirmada"
                     return _mk_text(f"La reserva está confirmada. Su número de confirmación es {code}.")
                 return _mk_text(result)

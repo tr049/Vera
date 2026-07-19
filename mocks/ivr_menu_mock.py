@@ -12,7 +12,7 @@ Then type a digit (1/2/3/0), a phrase, or 'q' to quit.
 """
 
 GREETING = (
-    "Thanks for calling Aurora Hotel. Tell me what you need, or press a key:\n"
+    "Thanks for calling Vera Hotel. Tell me what you need, or press a key:\n"
     "  1 or 'book'     → new reservation\n"
     "  2 or 'change'   → change or cancel reservation\n"
     "  3 or 'hours'    → front desk hours\n"

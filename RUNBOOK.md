@@ -1,6 +1,6 @@
-# Aurora Voice Agent Demo Guide
+# Vera Voice Agent Demo Guide
 
-This guide walks through a staged, hands-on demo of the Aurora voice agent. Every stage extends the same Aurora Hotel workflow.
+This guide walks through a staged, hands-on demo of the Vera voice agent. Every stage extends the same Vera Hotel workflow.
 
 Dependency installation, API-key setup, and microphone permission troubleshooting should be completed ahead of time (see Setup below).
 
@@ -218,7 +218,7 @@ Browser:
 http://localhost:5173
 ```
 
-Click **Start call** once to grant browser microphone access. The application automatically joins Caller Demo and Aurora Agent.
+Click **Start call** once to grant browser microphone access. The application automatically joins Caller Demo and Vera Agent.
 
 Verify:
 
@@ -251,7 +251,7 @@ Use the browser controls while the call remains connected.
 2. Set Endpoint silence to 900 ms and repeat the same sentence.
 3. Restore 650 ms.
 4. Ask for the cancellation policy.
-5. Wait about half a second into Aurora's response.
+5. Wait about half a second into Vera's response.
 6. Interrupt with: `Wait, speak Spanish.`
 7. Ask a second question in Spanish.
 

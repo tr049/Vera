@@ -103,7 +103,7 @@ def run(text_mode: bool) -> None:
     print(f"Provider: {provider.name} | LLM: {provider.llm_model}")
     print("Call started. Say/type 'goodbye' or Ctrl-C to hang up.\n")
 
-    speak(provider, "Thanks for calling Aurora Hotel reservations. How can I help?")
+    speak(provider, "Thanks for calling Vera Hotel reservations. How can I help?")
 
     while True:
         try:
@@ -144,7 +144,7 @@ def run(text_mode: bool) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Aurora voice loop")
+    parser = argparse.ArgumentParser(description="Vera voice loop")
     parser.add_argument("--text", action="store_true",
                         help="type turns instead of speaking (no mic / no audio deps)")
     args = parser.parse_args()

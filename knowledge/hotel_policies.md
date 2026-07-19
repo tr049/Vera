@@ -1,4 +1,4 @@
-# Aurora Hotel Policies
+# Vera Hotel Policies
 
 ## Cancellation
 
@@ -14,7 +14,7 @@ Self-parking costs $28 per night and includes unlimited exits. Valet parking cos
 
 ## Pets
 
-Aurora Hotel welcomes up to two dogs per room. Each dog must weigh no more than 50 pounds. A non-refundable cleaning fee of $75 applies per stay. Service animals are exempt from the fee.
+Vera Hotel welcomes up to two dogs per room. Each dog must weigh no more than 50 pounds. A non-refundable cleaning fee of $75 applies per stay. Service animals are exempt from the fee.
 
 ## Accessibility
 

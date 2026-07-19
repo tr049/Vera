@@ -1,4 +1,4 @@
-# Aurora — AI Voice Agent for Hotel Reservations
+# Vera — AI Voice Agent for Hotel Reservations
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Packaged with uv](https://img.shields.io/badge/packaged%20with-uv-6340ac)
@@ -7,7 +7,7 @@
 
 **By [Taimoor Raza](https://github.com/tr049)**
 
-Aurora is a production-shaped **voice AI agent** that handles hotel reservations end to end:
+Vera is a production-shaped **voice AI agent** that handles hotel reservations end to end:
 it listens, books rooms, answers policy questions from a grounded knowledge base, switches
 between English and Spanish, and hands off to a human when needed. It runs **fully offline**
 against a deterministic mock, or **live** against OpenAI/Groq — and ships with a real-time

@@ -47,7 +47,7 @@ PRESETS = {
 }
 
 DEFAULT_STT_PROMPT = (
-    "Aurora Hotel reservations conversation in English or Spanish. "
+    "Vera Hotel reservations conversation in English or Spanish. "
     "Hotel vocabulary: reservation, booking, check-in, check-out, cancellation policy, "
     "pet policy, parking, breakfast, accessibility, habitación, reserva, política de "
     "cancelación, mascotas, estacionamiento, desayuno, accesibilidad."
@@ -216,14 +216,14 @@ class MockProvider:
                     return _mk_tool("search_hotel_knowledge", {"query": original})
                 if _mock_off_topic(original):
                     return _mk_text("Solo puedo ayudar con reservas de hotel. ¿Quiere reservar, cambiar o cancelar una estancia?")
-                return _mk_text("Claro. Puedo ayudarle con una reserva en Aurora Hotel.")
+                return _mk_text("Claro. Puedo ayudarle con una reserva en Vera Hotel.")
             if result.lower().startswith("response language set to english"):
                 original = _last_user_text(messages).lower()
                 if _mock_knowledge_request(original):
                     return _mk_tool("search_hotel_knowledge", {"query": original})
                 if _mock_off_topic(original):
                     return _mk_text("I can only help with hotel reservations. Are you looking to book, change, or cancel a stay?")
-                return _mk_text("Of course. I can continue in English with your Aurora Hotel reservation.")
+                return _mk_text("Of course. I can continue in English with your Vera Hotel reservation.")
             if result.lower().startswith("available rooms"):
                 if spanish:
                     return _mk_text(f"{result} ¿Quiere que reserve una de estas habitaciones?")
@@ -240,7 +240,7 @@ class MockProvider:
             if result.lower().startswith("transferring") and spanish:
                 return _mk_text("Le transfiero a la recepción.")
             if result.lower().startswith("ending") and spanish:
-                return _mk_text("Gracias por llamar a Aurora Hotel. Adiós.")
+                return _mk_text("Gracias por llamar a Vera Hotel. Adiós.")
             return _mk_text(result)  # transfer / hangup / not-found: speak as-is
 
         text = (last.get("content") or "").lower()
@@ -382,8 +382,8 @@ def _grounded_policy_reply(result: str, spanish: bool, query: str) -> str:
             return "El desayuno se sirve de 6:30 AM a 10:30 AM y solo está incluido cuando la tarifa lo indica."
         return "Breakfast is served from 6:30 AM to 10:30 AM and is included only when the selected rate says so."
     if spanish:
-        return "Encontré la política de Aurora Hotel y puedo ayudarle con los detalles de su reserva."
-    return "I found the relevant Aurora Hotel policy and can help apply it to your reservation."
+        return "Encontré la política de Vera Hotel y puedo ayudarle con los detalles de su reserva."
+    return "I found the relevant Vera Hotel policy and can help apply it to your reservation."
 
 
 def make_provider(name: str | None = None):

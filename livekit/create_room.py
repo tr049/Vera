@@ -24,7 +24,7 @@ LOCAL_DEFAULTS = {
     "LIVEKIT_URL": "http://localhost:7880",
     "LIVEKIT_API_KEY": "devkey",
     "LIVEKIT_API_SECRET": "secret",
-    "LIVEKIT_ROOM": "aurora-demo-room",
+    "LIVEKIT_ROOM": "vera-demo-room",
 }
 
 

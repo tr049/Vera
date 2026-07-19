@@ -1,4 +1,4 @@
-"""Validated session-level language state for the Aurora hotel agent."""
+"""Validated session-level language state for the Vera hotel agent."""
 
 from __future__ import annotations
 

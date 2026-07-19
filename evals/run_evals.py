@@ -1,4 +1,4 @@
-"""Run deterministic Aurora task and red-team evaluations with no API cost."""
+"""Run deterministic Vera task and red-team evaluations with no API cost."""
 
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def load_cases(suite: str) -> list[dict]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Aurora voice-agent evaluations")
+    parser = argparse.ArgumentParser(description="Run Vera voice-agent evaluations")
     parser.add_argument("--suite", choices=("core", "red-team", "all"), default="all")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()

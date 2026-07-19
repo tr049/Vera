@@ -39,7 +39,7 @@ def estimate_capacity(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Aurora voice-agent scale calculator")
+    parser = argparse.ArgumentParser(description="Vera voice-agent scale calculator")
     parser.add_argument("--dau", type=int, default=1_000_000)
     parser.add_argument("--calls-per-dau", type=float, default=0.25)
     parser.add_argument("--duration-minutes", type=float, default=4.0)
@@ -65,7 +65,7 @@ def main() -> None:
         print(json.dumps(result, indent=2))
         return
 
-    print("Aurora capacity estimate")
+    print("Vera capacity estimate")
     print(f"  daily calls                 {result['dailyCalls']:>12,}")
     print(f"  daily voice minutes         {result['dailyMinutes']:>12,}")
     print(f"  average concurrent calls    {result['averageConcurrency']:>12,.1f}")

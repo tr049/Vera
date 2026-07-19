@@ -1,4 +1,4 @@
-# Aurora Voice Pipeline
+# Vera Voice Pipeline
 
 The pipeline is the local text and microphone runtime:
 

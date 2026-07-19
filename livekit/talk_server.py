@@ -31,7 +31,7 @@ _session_registry_lock = threading.Lock()
 _agent_sessions: dict[str, object] = {}
 _session_locks: dict[str, threading.Lock] = {}
 
-GREETING = "Thanks for calling Aurora Hotel reservations. How can I help?"
+GREETING = "Thanks for calling Vera Hotel reservations. How can I help?"
 
 
 def _load_env_files() -> None:
@@ -60,7 +60,7 @@ def _livekit_api_secret() -> str:
 
 
 def _livekit_room() -> str:
-    return os.getenv("LIVEKIT_ROOM", "aurora-demo-room")
+    return os.getenv("LIVEKIT_ROOM", "vera-demo-room")
 
 
 def _new_agent():

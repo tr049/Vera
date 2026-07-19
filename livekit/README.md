@@ -1,6 +1,6 @@
 # Local LiveKit Voice Session
 
-This folder provides the room and browser stage of the Aurora project. It runs against a self-contained LiveKit development server and does not require LiveKit Cloud credentials.
+This folder provides the room and browser stage of the Vera project. It runs against a self-contained LiveKit development server and does not require LiveKit Cloud credentials.
 
 ## Install
 
@@ -25,7 +25,7 @@ uv run python create_room.py
 uv run python talk_server.py
 ```
 
-Open `http://localhost:5173`, click **Start call**, and allow microphone access. Caller Demo and Aurora Agent join `aurora-demo-room` automatically.
+Open `http://localhost:5173`, click **Start call**, and allow microphone access. Caller Demo and Vera Agent join `vera-demo-room` automatically.
 
 The browser shows:
 
@@ -48,7 +48,7 @@ speech by itself does not change the configured response language.
 LIVEKIT_URL=http://localhost:7880
 LIVEKIT_API_KEY=devkey
 LIVEKIT_API_SECRET=secret
-LIVEKIT_ROOM=aurora-demo-room
+LIVEKIT_ROOM=vera-demo-room
 ```
 
 Override these values in `livekit/.env` when using another server. The scripts also read `pipeline/.env` for the selected agent provider.
@@ -77,7 +77,7 @@ A room-native production worker would subscribe directly to the caller audio tra
 phone caller -> carrier -> SIP trunk -> SIP edge or SBC -> LiveKit room -> agent worker
 ```
 
-A real SIP deployment requires a trunk, dispatch rule, internet-reachable signaling and media endpoints, authentication, codec negotiation, and transfer handling. A SIP REFER maps to Aurora's transfer action, while SIP BYE maps to the end-call action.
+A real SIP deployment requires a trunk, dispatch rule, internet-reachable signaling and media endpoints, authentication, codec negotiation, and transfer handling. A SIP REFER maps to Vera's transfer action, while SIP BYE maps to the end-call action.
 
 ## Troubleshooting
 
@@ -87,7 +87,7 @@ A real SIP deployment requires a trunk, dispatch rule, internet-reachable signal
 | UI loads but Start call fails | Confirm both the LiveKit server and `talk_server.py` are running |
 | No microphone activity | Allow browser microphone access and check the Caller Demo mute state |
 | Background noise starts turns | Increase Speech sensitivity |
-| Aurora interrupts itself | Reload the latest UI, use headphones if available, and increase Speech sensitivity |
+| Vera interrupts itself | Reload the latest UI, use headphones if available, and increase Speech sensitivity |
 | Turns commit too quickly | Increase Endpoint silence |
 | Turns feel slow | Decrease Endpoint silence carefully |
 | No real transcription in mock mode | Set a live provider in `pipeline/.env` |

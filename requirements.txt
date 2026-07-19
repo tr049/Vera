@@ -46,7 +46,7 @@ idna==3.18
 jiter==0.16.0
     # via openai
 livekit-api==1.2.0
-    # via aurora-voice-agent
+    # via vera-voice-agent
 livekit-protocol==1.1.19
     # via livekit-api
 multidict==6.7.1
@@ -54,13 +54,13 @@ multidict==6.7.1
     #   aiohttp
     #   yarl
 numpy==2.2.6 ; python_full_version < '3.11'
-    # via aurora-voice-agent
+    # via vera-voice-agent
 numpy==2.4.6 ; python_full_version == '3.11.*'
-    # via aurora-voice-agent
+    # via vera-voice-agent
 numpy==2.5.1 ; python_full_version >= '3.12'
-    # via aurora-voice-agent
+    # via vera-voice-agent
 openai==2.46.0
-    # via aurora-voice-agent
+    # via vera-voice-agent
 propcache==0.5.2
     # via
     #   aiohttp
@@ -78,13 +78,13 @@ pydantic-core==2.46.4
 pyjwt==2.13.0
     # via livekit-api
 python-dotenv==1.2.2
-    # via aurora-voice-agent
+    # via vera-voice-agent
 setuptools==80.10.2
-    # via aurora-voice-agent
+    # via vera-voice-agent
 sniffio==1.3.1
     # via openai
 sounddevice==0.5.5
-    # via aurora-voice-agent
+    # via vera-voice-agent
 tqdm==4.69.0
     # via openai
 types-protobuf==7.34.1.20260518
@@ -106,6 +106,6 @@ typing-extensions==4.16.0
 typing-inspection==0.4.2
     # via pydantic
 webrtcvad==2.0.10
-    # via aurora-voice-agent
+    # via vera-voice-agent
 yarl==1.24.2
     # via aiohttp

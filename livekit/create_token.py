@@ -7,7 +7,7 @@ Optional:
 
 Example:
     python create_token.py --identity caller-demo --name "Caller Demo"
-    python create_token.py --identity aurora-agent --name "Aurora Agent"
+    python create_token.py --identity vera-agent --name "Vera Agent"
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from env_loader import load_env_files
 LOCAL_DEFAULTS = {
     "LIVEKIT_API_KEY": "devkey",
     "LIVEKIT_API_SECRET": "secret",
-    "LIVEKIT_ROOM": "aurora-demo-room",
+    "LIVEKIT_ROOM": "vera-demo-room",
 }
 
 

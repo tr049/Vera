@@ -1,7 +1,7 @@
 [project]
-name = "aurora-voice-agent"
+name = "vera-voice-agent"
 version = "0.1.0"
-description = "Aurora — hotel-reservations voice agent: VAD -> STT -> LLM+tools -> RAG -> TTS"
+description = "Vera — hotel-reservations voice agent: VAD -> STT -> LLM+tools -> RAG -> TTS"
 readme = "README.md"
 requires-python = ">=3.10"
 

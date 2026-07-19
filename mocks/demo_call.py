@@ -71,7 +71,7 @@ def main() -> None:
     action = None
 
     # Agent greets first, like an IVR.
-    greeting = "Thanks for calling Aurora Hotel reservations. How can I help?"
+    greeting = "Thanks for calling Vera Hotel reservations. How can I help?"
     media("out", "agent", greeting)
 
     # --- Conversation (Layer A/B) ---

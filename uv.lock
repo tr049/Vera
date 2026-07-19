@@ -208,52 +208,6 @@ wheels = [
 ]
 
 [[package]]
-name = "aurora-voice-agent"
-version = "0.1.0"
-source = { virtual = "." }
-
-[package.optional-dependencies]
-audio = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "setuptools" },
-    { name = "sounddevice" },
-    { name = "webrtcvad" },
-]
-live = [
-    { name = "openai" },
-    { name = "python-dotenv" },
-]
-livekit = [
-    { name = "livekit-api" },
-    { name = "openai" },
-    { name = "python-dotenv" },
-]
-
-[package.dev-dependencies]
-lint = [
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "livekit-api", marker = "extra == 'livekit'", specifier = ">=0.7" },
-    { name = "numpy", marker = "extra == 'audio'", specifier = ">=1.24" },
-    { name = "openai", marker = "extra == 'live'", specifier = ">=1.30" },
-    { name = "openai", marker = "extra == 'livekit'", specifier = ">=1.30" },
-    { name = "python-dotenv", marker = "extra == 'live'", specifier = ">=1.0" },
-    { name = "python-dotenv", marker = "extra == 'livekit'", specifier = ">=1.0" },
-    { name = "setuptools", marker = "extra == 'audio'", specifier = "<81" },
-    { name = "sounddevice", marker = "extra == 'audio'", specifier = ">=0.4" },
-    { name = "webrtcvad", marker = "extra == 'audio'", specifier = ">=2.0" },
-]
-provides-extras = ["live", "audio", "livekit"]
-
-[package.metadata.requires-dev]
-lint = [{ name = "ruff", specifier = ">=0.6" }]
-
-[[package]]
 name = "certifi"
 version = "2026.6.17"
 source = { registry = "https://pypi.org/simple" }
@@ -1459,6 +1413,52 @@ sdist = { url = "https://files.pythonhosted.org/packages/55/e3/70399cb7dd41c10ac
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/9b/47798a6c91d8bdb567fe2698fe81e0c6b7cb7ef4d13da4114b41d239f65d/typing_inspection-0.4.2-py3-none-any.whl", hash = "sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7", size = 14611, upload-time = "2025-10-01T02:14:40.154Z" },
 ]
+
+[[package]]
+name = "vera-voice-agent"
+version = "0.1.0"
+source = { virtual = "." }
+
+[package.optional-dependencies]
+audio = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "setuptools" },
+    { name = "sounddevice" },
+    { name = "webrtcvad" },
+]
+live = [
+    { name = "openai" },
+    { name = "python-dotenv" },
+]
+livekit = [
+    { name = "livekit-api" },
+    { name = "openai" },
+    { name = "python-dotenv" },
+]
+
+[package.dev-dependencies]
+lint = [
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "livekit-api", marker = "extra == 'livekit'", specifier = ">=0.7" },
+    { name = "numpy", marker = "extra == 'audio'", specifier = ">=1.24" },
+    { name = "openai", marker = "extra == 'live'", specifier = ">=1.30" },
+    { name = "openai", marker = "extra == 'livekit'", specifier = ">=1.30" },
+    { name = "python-dotenv", marker = "extra == 'live'", specifier = ">=1.0" },
+    { name = "python-dotenv", marker = "extra == 'livekit'", specifier = ">=1.0" },
+    { name = "setuptools", marker = "extra == 'audio'", specifier = "<81" },
+    { name = "sounddevice", marker = "extra == 'audio'", specifier = ">=0.4" },
+    { name = "webrtcvad", marker = "extra == 'audio'", specifier = ">=2.0" },
+]
+provides-extras = ["live", "audio", "livekit"]
+
+[package.metadata.requires-dev]
+lint = [{ name = "ruff", specifier = ">=0.6" }]
 
 [[package]]
 name = "webrtcvad"

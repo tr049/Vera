@@ -1,4 +1,4 @@
-"""Structured, vendor-neutral telemetry for Aurora voice turns."""
+"""Structured, vendor-neutral telemetry for Vera voice turns."""
 
 from __future__ import annotations
 

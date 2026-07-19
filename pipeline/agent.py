@@ -23,7 +23,7 @@ from providers import Provider
 from router import AgentRouter, LANGUAGES
 from telemetry import TurnTrace
 
-SYSTEM_PROMPT = """You are a friendly phone reservations agent for Aurora Hotel.
+SYSTEM_PROMPT = """You are a friendly phone reservations agent for Vera Hotel.
 Your only job is hotel room booking support: new reservations, availability,
 room options, rates returned by tools, changing/canceling reservations, and
 transferring to the front desk. Hotel policies and amenities are in scope even
@@ -143,7 +143,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "search_hotel_knowledge",
-            "description": "Retrieve grounded Aurora Hotel policies, amenities, and operating details. "
+            "description": "Retrieve grounded Vera Hotel policies, amenities, and operating details. "
                            "Always use for cancellation rules, check-in or check-out times, parking, "
                            "pets, breakfast, accessibility, and other hotel-information questions.",
             "parameters": {

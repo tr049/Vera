@@ -91,7 +91,7 @@ function addTranscript(role, text, meta = "") {
   item.className = `bubble ${role}`;
   const label = document.createElement("div");
   label.className = "bubble-label";
-  label.textContent = `${role === "caller" ? "Caller Demo" : "Aurora Agent"}${meta ? ` | ${meta}` : ""}`;
+  label.textContent = `${role === "caller" ? "Caller Demo" : "Vera Agent"}${meta ? ` | ${meta}` : ""}`;
   const body = document.createElement("div");
   body.textContent = text;
   item.append(label, body);
@@ -203,7 +203,7 @@ function beginAgentPlayback(token, backend) {
     appendRuntimeEvent(`turn.first_audio | ${formatMs(firstAudioMs)}`);
     lastEndpointAt = 0;
   }
-  setListeningState("Agent speaking", "Interrupt naturally by speaking over Aurora.");
+  setListeningState("Agent speaking", "Interrupt naturally by speaking over Vera.");
 }
 
 function finishAgentPlayback(token) {
@@ -213,7 +213,7 @@ function finishAgentPlayback(token) {
   agentRoot.classList.remove("speaking");
   listenCooldownUntil = Date.now() + 500;
   if (listenStream) {
-    setListeningState("Listening", "Speak naturally. Aurora can be interrupted while talking.");
+    setListeningState("Listening", "Speak naturally. Vera can be interrupted while talking.");
   }
 }
 
@@ -269,7 +269,7 @@ function interruptAgent(detectedAt, turnAlreadyRecording = false) {
   addInterruption();
   appendRuntimeEvent("barge_in.detected");
   metrics.barge.textContent = formatMs(Date.now() - detectedAt);
-  setListeningState("Interrupted", "Aurora stopped. Listening to the caller.");
+  setListeningState("Interrupted", "Vera stopped. Listening to the caller.");
 }
 
 function audioLevel() {
@@ -313,9 +313,9 @@ function startTurnRecording(isBargeIn = false) {
     if (shouldDiscard || audioBlob.size < 800) {
       currentTurnWasBargeIn = false;
       if (agentSpeaking) {
-        setListeningState("Agent speaking", "Interrupt naturally by speaking over Aurora.");
+        setListeningState("Agent speaking", "Interrupt naturally by speaking over Vera.");
       } else if (listenStream) {
-        setListeningState("Listening", "Speak naturally. Aurora can be interrupted while talking.");
+        setListeningState("Listening", "Speak naturally. Vera can be interrupted while talking.");
       }
       return;
     }
@@ -526,7 +526,7 @@ async function prepareListener() {
   setListeningState("Calibrating", "Measuring the room noise floor.");
   vadFrame = requestAnimationFrame(vadLoop);
   await new Promise((resolve) => setTimeout(resolve, 650));
-  setListeningState("Listening", "Speak naturally. Aurora can be interrupted while talking.");
+  setListeningState("Listening", "Speak naturally. Vera can be interrupted while talking.");
 }
 
 async function startCall() {
@@ -538,7 +538,7 @@ async function startCall() {
   callerStatus.textContent = "Connecting";
   agentStatus.textContent = "Connecting";
   await fetch("/reset", { method: "POST", headers: { "X-Session-ID": sessionId } });
-  agentRoom = await connectParticipant("aurora-agent", "Aurora Agent");
+  agentRoom = await connectParticipant("vera-agent", "Vera Agent");
   agentStatus.textContent = "Connected";
   await prepareListener();
   callerRoom = await connectParticipant("caller-demo", "Caller Demo");
@@ -570,7 +570,7 @@ async function startCall() {
   } catch (error) {
     agentBusy = false;
     appendRuntimeEvent("tts.greeting_fallback | browser");
-    speak("Thanks for calling Aurora Hotel reservations. How can I help?", "en-US");
+    speak("Thanks for calling Vera Hotel reservations. How can I help?", "en-US");
   }
 }
 
@@ -608,7 +608,7 @@ async function toggleMute() {
   callerStatus.textContent = muted ? "Muted" : "Connected";
   setListeningState(muted ? "Muted" : "Listening", muted
     ? "Microphone input is paused."
-    : "Speak naturally. Aurora can be interrupted while talking.");
+    : "Speak naturally. Vera can be interrupted while talking.");
 }
 
 async function loadState() {

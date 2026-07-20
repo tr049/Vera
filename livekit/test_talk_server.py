@@ -72,6 +72,39 @@ class BrowserTtsPayloadTests(unittest.TestCase):
         self.assertEqual(trace.events[0][0], "tts.fallback")
         self.assertNotIn("secret provider response", str(payload))
 
+    def test_voice_for_labels_per_turn_voice_without_collapsing_model(self):
+        # Deepgram TTS: the label must show the ACTUAL per-turn voice (celeste for a
+        # Spanish turn) while ttsModel stays the configured model -- never collapse
+        # model onto the voice (that mislabelled the STT-only two-vendor stack).
+        class VoiceForProvider(FakeProvider):
+            tts_model = "aura-2-luna-en"
+            tts_voice = "aura-2-luna-en"
+
+            def voice_for(self, language=None):
+                return {"es": "aura-2-celeste-es"}.get(language, "aura-2-luna-en")
+
+        agent = FakeAgent(VoiceForProvider())
+        agent.current_language = "es"
+        payload = _browser_tts_payload(agent, FakeTrace(), "Hola")
+
+        self.assertEqual(payload["ttsVoice"], "aura-2-celeste-es")  # what the caller heard
+        self.assertEqual(payload["ttsModel"], "aura-2-luna-en")     # real model, not the voice
+
+    def test_voice_for_stt_only_stack_keeps_base_model_and_voice(self):
+        # STT-only Deepgram: TTS runs on the base provider, so voice_for returns the
+        # base voice and ttsModel stays the base model -- neither is mislabelled.
+        class SttOnlyProvider(FakeProvider):
+            tts_model = "gpt-4o-mini-tts"
+            tts_voice = "alloy"
+
+            def voice_for(self, language=None):
+                return "alloy"  # SpeechOverrideProvider returns the base voice here
+
+        payload = _browser_tts_payload(FakeAgent(SttOnlyProvider()), FakeTrace(), "Hi")
+
+        self.assertEqual(payload["ttsModel"], "gpt-4o-mini-tts")  # not 'alloy'
+        self.assertEqual(payload["ttsVoice"], "alloy")
+
 
 class VoiceAgentReplyTests(unittest.TestCase):
     """Covers the refactored STT seam: _voice_agent_reply must transcribe via the

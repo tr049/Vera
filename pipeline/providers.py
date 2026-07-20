@@ -435,10 +435,15 @@ def _last_user_text(messages: list[dict]) -> str:
 
 
 def _mock_knowledge_request(text: str) -> bool:
+    # Mirrors agent.required_tool_for: "check in/out" counts as a policy question only
+    # when qualified (time/when/policy), so "check in this weekend" stays a booking.
     return any(word in text for word in (
-        "cancellation policy", "cancel policy", "check-in", "check in", "check-out",
-        "check out", "parking", "pets", "pet policy", "breakfast", "accessible",
-        "accessibility", "policy", "estacionamiento", "mascotas", "desayuno",
+        "cancellation policy", "cancel policy", "parking", "pets", "pet policy",
+        "breakfast", "accessible", "accessibility", "policy",
+        "check-in time", "check in time", "check-out time", "check out time",
+        "when is check", "what time is check", "when can i check", "when do i check",
+        "check-in policy", "check-out policy",
+        "estacionamiento", "mascotas", "desayuno",
     ))
 
 
@@ -545,6 +550,14 @@ class SpeechOverrideProvider:
         if self._use_tts and self.tts_backend == "provider":
             return self._speech.synthesize(text, language)
         return self._base.synthesize(text, language)
+
+    def voice_for(self, language=None):
+        """The voice the active TTS backend will use for `language` (for labels)."""
+        if self._use_tts and self.tts_backend == "provider":
+            resolve = getattr(self._speech, "voice_for", None)
+            if resolve:
+                return resolve(language)
+        return self.tts_voice
 
 
 def make_provider(name: str | None = None):

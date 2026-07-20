@@ -85,13 +85,17 @@ class DeepgramSpeech:
         return self._transcribe_bytes(audio)
 
     # --- TTS ---
+    def voice_for(self, language: str | None = None) -> str:
+        """The Aura-2 voice actually used for `language` (so telemetry/UI can label
+        the per-turn voice instead of the static default)."""
+        return self._voices.get(language or "en", self._voices["en"])
+
     def synthesize(self, text: str, language: str | None = None) -> bytes:
         """Return WAV bytes, spoken by the native Aura-2 voice for `language`.
         linear16/wav so the existing WAV-only players work."""
-        voice = self._voices.get(language or "en", self._voices["en"])
         chunks = self._client.speak.v1.audio.generate(
             text=text,
-            model=voice,
+            model=self.voice_for(language),
             encoding="linear16",
             container="wav",
         )

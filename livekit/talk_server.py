@@ -122,9 +122,14 @@ def _browser_tts_payload(agent, trace, text: str) -> dict:
     if backend != "provider" or getattr(provider, "name", "") == "mock":
         return {"ttsBackend": "browser"}
 
-    model = getattr(provider, "tts_model", "unknown")
-    voice = getattr(provider, "tts_voice", "unknown")
     language = getattr(agent, "current_language", None)  # per-turn native voice (Deepgram)
+    model = getattr(provider, "tts_model", "unknown")
+    # voice_for reports the ACTUAL per-turn voice (e.g. Deepgram picks aura-2-celeste-es
+    # for Spanish); the model label stays the configured TTS model. When TTS runs on the
+    # base provider (e.g. STT-only Deepgram) voice_for returns that base voice, so model
+    # and voice each stay correct instead of collapsing onto the voice.
+    resolve = getattr(provider, "voice_for", None)
+    voice = resolve(language) if resolve else getattr(provider, "tts_voice", "unknown")
     try:
         with trace.span("tts", model=model, voice=voice):
             audio = provider.synthesize(text, language)

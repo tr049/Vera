@@ -115,6 +115,19 @@ class RetrievalTests(unittest.TestCase):
             "search_hotel_knowledge",
         )
 
+    def test_check_in_as_booking_verb_is_not_misrouted_to_rag(self):
+        # "check in <date>" is a booking, not a policy question; it must reach the
+        # LLM (and check_availability), not be force-routed to search_hotel_knowledge.
+        self.assertIsNone(required_tool_for("I want to check in this weekend for two guests"))
+        self.assertIsNone(required_tool_for("Can I check in on Friday?"))
+
+    def test_check_in_time_question_still_routes_to_rag(self):
+        for question in ("What time is check-in?", "What's the check-out time?",
+                         "When is check-in?"):
+            self.assertEqual(
+                required_tool_for(question), "search_hotel_knowledge", question,
+            )
+
     def test_forced_tool_choice_is_sent_on_first_model_call(self):
         class RecordingProvider(MockProvider):
             def __init__(self):
@@ -379,6 +392,9 @@ class _StubSpeech:
     def synthesize(self, text, language=None):
         return b"dg-audio"
 
+    def voice_for(self, language=None):
+        return {"es": "aura-2-celeste-es"}.get(language, "aura-2-luna-en")
+
 
 class DeepgramOverrideTests(unittest.TestCase):
     def test_mock_ignores_speech_overrides_and_needs_no_key(self):
@@ -419,6 +435,19 @@ class DeepgramOverrideTests(unittest.TestCase):
         self.assertEqual(provider.synthesize("hi"), b"base-audio")
         self.assertEqual(provider.tts_model, "base-tts")
 
+    def test_voice_for_delegates_to_speech_when_deepgram_tts_active(self):
+        provider = SpeechOverrideProvider(_StubBase(), _StubSpeech(), use_stt=False, use_tts=True)
+        self.assertEqual(provider.voice_for("es"), "aura-2-celeste-es")  # per-turn native voice
+        self.assertEqual(provider.voice_for("en"), "aura-2-luna-en")
+
+    def test_voice_for_reports_base_voice_when_tts_stays_on_base(self):
+        # STT-only Deepgram: TTS runs on the base provider, so voice_for must report the
+        # base voice (not a Deepgram voice) and tts_model stays the base model -- this is
+        # what keeps the browser TTS label correct in a two-vendor stack.
+        provider = SpeechOverrideProvider(_StubBase(), _StubSpeech(), use_stt=True, use_tts=False)
+        self.assertEqual(provider.voice_for("es"), "base-voice")
+        self.assertEqual(provider.tts_model, "base-tts")
+
     def test_first_transcript_extracts_and_trims(self):
         from types import SimpleNamespace as NS
         resp = NS(results=NS(channels=[NS(alternatives=[NS(transcript="  book a room  ")])]))
@@ -456,6 +485,10 @@ class DeepgramOverrideTests(unittest.TestCase):
         self.assertEqual(captured["model"], "aura-2-luna-en")     # English -> native EN voice
         dg.synthesize("hi", None)
         self.assertEqual(captured["model"], "aura-2-luna-en")     # default -> EN
+        # voice_for reports the SAME voice the audio uses (fixes the telemetry label).
+        self.assertEqual(dg.voice_for("es"), "aura-2-celeste-es")
+        self.assertEqual(dg.voice_for("en"), "aura-2-luna-en")
+        self.assertEqual(dg.voice_for(None), "aura-2-luna-en")
 
     def test_deepgram_transcribe_passes_multi_and_keyterm(self):
         from types import SimpleNamespace as NS
@@ -473,6 +506,28 @@ class DeepgramOverrideTests(unittest.TestCase):
         self.assertEqual(dg.transcribe_media(b"audio", "audio/webm"), "book a room")
         self.assertEqual(captured["language"], "multi")   # always multilingual
         self.assertIn("Vera", captured["keyterm"])        # hotel vocab biasing
+
+
+class DatePromptTests(unittest.TestCase):
+    def test_system_prompt_carries_todays_date(self):
+        from datetime import date
+
+        agent = Agent(make_provider("mock"))
+        agent.respond("I need a room for two guests",
+                      trace=TurnTrace(session_id="t", turn_id="date"))
+        sysmsg = agent.messages[0]["content"]
+        self.assertIn("Today's date is", sysmsg)          # so the LLM can resolve
+        self.assertIn(str(date.today().year), sysmsg)     # "this weekend" -> concrete dates
+
+    def test_prompt_carries_relative_date_resolution_guidance(self):
+        # The mock ignores dates, so the only offline guard on the resolution behaviour
+        # is the guidance text itself -- assert it survives (weekend rule + self-resolve).
+        from agent import _dated_system_prompt
+
+        guidance = _dated_system_prompt()
+        self.assertIn("resolve them YOURSELF", guidance)
+        self.assertIn("upcoming Saturday", guidance)       # weekend convention is stated
+        self.assertIn("starts today", guidance)            # today-is-weekend clause
 
 
 if __name__ == "__main__":

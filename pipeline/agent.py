@@ -17,6 +17,7 @@ import json
 import os
 import re
 import unicodedata
+from datetime import date
 from difflib import SequenceMatcher
 
 from inventory import book_if_available, is_available, parse_date
@@ -67,6 +68,25 @@ Booking flow:
 7. If the caller asks for a person or the request is outside what you can do,
    call transfer_to_human. When the conversation is clearly over, call end_call."""
 
+
+def _dated_system_prompt() -> str:
+    """SYSTEM_PROMPT plus today's date, so the model can resolve relative dates
+    ("this weekend", "next Friday", "tomorrow") to concrete calendar dates instead
+    of guessing. Evaluated per turn, so a long-running server stays current."""
+    today = date.today()
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"Today's date is {today:%A, %B %d, %Y}. Relative dates the caller gives "
+        f'("this/coming weekend", "next Friday", "tomorrow", "in two weeks") COUNT as the dates '
+        f"being provided — resolve them YOURSELF to concrete calendar dates from today's date and "
+        f"proceed; do NOT ask the caller to restate a date you can compute. "
+        f'"This/coming weekend" = check-in the upcoming Saturday, check-out the following Sunday '
+        f"(a one-night Saturday stay), unless the caller says otherwise; if today is already "
+        f'Saturday or Sunday, "this weekend" starts today, not next week. '
+        f"Then ask only for details still missing (e.g. guest count)."
+    )
+
+
 # OpenAI-style tool schema (works on Groq too).
 TOOLS = [
     {
@@ -99,11 +119,13 @@ TOOLS = [
                 "properties": {
                     "check_in": {
                         "type": "string",
-                        "description": "Check-in date as stated by the caller.",
+                        "description": "Check-in date as a concrete calendar date (e.g. 'July 25'); "
+                                       "resolve relative dates like 'this weekend' using today's date.",
                     },
                     "check_out": {
                         "type": "string",
-                        "description": "Check-out date as stated by the caller.",
+                        "description": "Check-out date as a concrete calendar date (e.g. 'July 26'); "
+                                       "resolve relative dates using today's date.",
                     },
                     "guests": {
                         "type": "integer",
@@ -189,8 +211,15 @@ _KNOWLEDGE_INTENT_PHRASES = (
     "cancellation policy", "cancelation policy", "cancellation fee", "cancel fee",
     "cancellation charge", "when can i cancel", "refundable", "non-refundable",
     "pet policy", "pets allowed", "dogs allowed", "bring my dog", "bring a pet",
-    "parking", "valet", "breakfast", "check-in", "check in", "check-out",
-    "check out", "accessibility", "accessible room", "wi-fi", "wifi", "amenities",
+    "parking", "valet", "breakfast",
+    # "check in/out" is also the booking verb ("check in this weekend"), so treat it
+    # as a policy question only when qualified by time / when / policy wording -- a bare
+    # "check in <date>" must reach check_availability, not the knowledge tool.
+    "check-in time", "check in time", "check-out time", "check out time",
+    "when is check-in", "when is check in", "when is check-out", "when is check out",
+    "what time is check", "what time can i check", "when can i check", "when do i check",
+    "check-in policy", "check-out policy",
+    "accessibility", "accessible room", "wi-fi", "wifi", "amenities",
     "política de cancelación", "politica de cancelacion", "mascotas",
     "estacionamiento", "desayuno", "accesibilidad",
 )
@@ -409,7 +438,7 @@ class Agent:
             route = self.router.route()
             self.current_language = route.language
             self.current_locale = route.locale
-            self.messages[0]["content"] = f"{SYSTEM_PROMPT}\n\n{self.router.instruction()}"
+            self.messages[0]["content"] = f"{_dated_system_prompt()}\n\n{self.router.instruction()}"
         trace.event(
             "router.selected",
             language=route.language,
@@ -503,7 +532,7 @@ class Agent:
                             self.current_language = language_route.language
                             self.current_locale = language_route.locale
                             self.messages[0]["content"] = (
-                                f"{SYSTEM_PROMPT}\n\n{self.router.instruction()}"
+                                f"{_dated_system_prompt()}\n\n{self.router.instruction()}"
                             )
                             trace.attributes.update({
                                 "language": language_route.language,

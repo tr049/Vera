@@ -23,6 +23,9 @@ audio = ["sounddevice>=0.4", "webrtcvad>=2.0", "numpy>=1.24", "setuptools<81"]
 # Browser (LiveKit) demo backend. The Node side (livekit/package.json, livekit-client)
 # is NOT managed by uv — run `npm install` in livekit/ separately.
 livekit = ["livekit-api>=0.7", "openai>=1.30", "python-dotenv>=1.0"]
+deepgram = [
+    "deepgram-sdk>=7",
+]
 
 # Non-default group (not named `dev`, so bare `uv sync` stays empty). Enable with
 # `uv sync --group lint`. The test suites are stdlib unittest, so no pytest is needed.

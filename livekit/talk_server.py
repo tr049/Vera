@@ -11,7 +11,6 @@ import os
 import sys
 import threading
 import warnings
-from io import BytesIO
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -81,6 +80,9 @@ def _get_session(session_id: str):
 
 
 def _reset_session(session_id: str) -> None:
+    # Resets only the conversation, NOT the booking inventory: bookings persist for
+    # the server's lifetime so a later caller can't rebook a taken room ("next
+    # customer can't book it"). Restart the server for a fresh booking demo.
     with _session_registry_lock:
         _agent_sessions.pop(session_id, None)
         _session_locks.pop(session_id, None)
@@ -122,9 +124,10 @@ def _browser_tts_payload(agent, trace, text: str) -> dict:
 
     model = getattr(provider, "tts_model", "unknown")
     voice = getattr(provider, "tts_voice", "unknown")
+    language = getattr(agent, "current_language", None)  # per-turn native voice (Deepgram)
     try:
         with trace.span("tts", model=model, voice=voice):
-            audio = provider.synthesize(text)
+            audio = provider.synthesize(text, language)
     except Exception as exc:
         trace.event("tts.fallback", errorType=type(exc).__name__)
         return {"ttsBackend": "browser", "ttsFallback": True}
@@ -175,33 +178,48 @@ def _voice_agent_reply(
     was_barge_in: bool,
 ) -> dict:
     agent, lock = _get_session(session_id)
+    if str(PIPELINE_ROOT) not in sys.path:
+        sys.path.insert(0, str(PIPELINE_ROOT))
+    from providers import is_noise_transcript, is_stt_hallucination
+
     trace = _trace(session_id, turn_id)
     trace.event("audio.received", bytes=len(audio), contentType=content_type)
     if was_barge_in:
         trace.event("barge_in.turn_started")
     with lock:
-        if getattr(agent.provider, "name", "") == "mock":
-            with trace.span("stt", model=getattr(agent.provider, "stt_model", "unknown")):
-                transcript = agent.provider.transcribe(b"")
-        else:
-            audio_file = BytesIO(audio)
-            if "mp4" in content_type:
-                audio_file.name = "caller.mp4"
-            elif "ogg" in content_type:
-                audio_file.name = "caller.ogg"
-            else:
-                audio_file.name = "caller.webm"
-            with trace.span("stt", model=getattr(agent.provider, "stt_model", "unknown")):
-                transcription_args = {
-                    "model": agent.provider.stt_model,
-                    "file": audio_file,
-                    "response_format": "text",
-                }
-                stt_prompt = getattr(agent.provider, "stt_prompt", "")
-                if stt_prompt:
-                    transcription_args["prompt"] = stt_prompt
-                stt = agent.provider.client.audio.transcriptions.create(**transcription_args)
-            transcript = (stt if isinstance(stt, str) else stt.text).strip()
+        # One uniform STT call across mock / OpenAI / Groq / Deepgram. The provider
+        # owns container handling (transcribe_media), so no OpenAI-SDK reach-in here.
+        with trace.span("stt", model=getattr(agent.provider, "stt_model", "unknown")):
+            try:
+                transcript = agent.provider.transcribe_media(audio, content_type)
+            except Exception as exc:
+                # A speech-vendor error (bad key, 429, timeout) degrades the turn
+                # instead of 500-ing the browser and leaking the raw error string.
+                trace.event("stt.error", errorType=type(exc).__name__)
+                return _finish_response(
+                    agent,
+                    trace,
+                    "",
+                    None,
+                    transcript="",
+                    sttModel=getattr(agent.provider, "stt_model", "unknown"),
+                    ignored=True,
+                    ignoreReason="stt_error",
+                    response_sources=[],
+                )
+        if is_noise_transcript(transcript) or is_stt_hallucination(transcript):
+            trace.event("stt.suppressed", transcript=transcript)
+            return _finish_response(
+                agent,
+                trace,
+                "",
+                None,
+                transcript=transcript,
+                sttModel=getattr(agent.provider, "stt_model", "unknown"),
+                ignored=True,
+                ignoreReason="noise_or_hallucination",
+                response_sources=[],
+            )
         if was_barge_in and _is_probable_playback_echo(transcript):
             trace.event("barge_in.echo_suppressed", transcript=transcript)
             return _finish_response(

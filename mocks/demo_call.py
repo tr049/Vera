@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pipeline"))
 os.environ["PROVIDER"] = "mock"  # force the offline backend
 
 from agent import Agent            # noqa: E402
+from inventory import reset_inventory  # noqa: E402
 from providers import make_provider  # noqa: E402
 
 CALL_ID = "9c8b7a6d-0f1e-2d3c-4b5a-60718293a4b5@203.0.113.10"
@@ -67,6 +68,7 @@ def main() -> None:
     sig("out", "200 OK  (SDP answer: PCMU, RTP port 40000)")
     sig("in", "ACK  → call established, media flowing\n")
 
+    reset_inventory()  # fresh booking store per simulated call
     agent = Agent(make_provider())
     action = None
 

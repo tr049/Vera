@@ -1,12 +1,15 @@
-"""Offline tests for browser TTS payload selection."""
+"""Offline tests for browser TTS payload selection + the voice-agent STT seam."""
 
 from __future__ import annotations
 
 import base64
+import os
 import unittest
 from contextlib import contextmanager
 
-from talk_server import _browser_tts_payload
+os.environ["PROVIDER"] = "mock"  # keep the voice-agent test offline
+
+from talk_server import _browser_tts_payload, _reset_session, _voice_agent_reply
 
 
 class FakeTrace:
@@ -31,7 +34,7 @@ class FakeProvider:
         self.error = error
         self.calls = []
 
-    def synthesize(self, text):
+    def synthesize(self, text, language=None):
         self.calls.append(text)
         if self.error:
             raise self.error
@@ -68,6 +71,90 @@ class BrowserTtsPayloadTests(unittest.TestCase):
         self.assertEqual(payload, {"ttsBackend": "browser", "ttsFallback": True})
         self.assertEqual(trace.events[0][0], "tts.fallback")
         self.assertNotIn("secret provider response", str(payload))
+
+
+class VoiceAgentReplyTests(unittest.TestCase):
+    """Covers the refactored STT seam: _voice_agent_reply must transcribe via the
+    provider's transcribe_media() (not an OpenAI-SDK reach-in) for any backend."""
+
+    def test_mock_browser_turn_transcribes_and_replies(self):
+        session = "test-voice-seam"
+        _reset_session(session)
+        try:
+            payload = _voice_agent_reply(
+                b"pretend-webm-audio", "audio/webm", session, "turn-1", False,
+            )
+        finally:
+            _reset_session(session)
+        # Transcript comes from the mock's scripted STT via transcribe_media,
+        # proving the uniform seam works with no OpenAI-specific bypass.
+        self.assertIn("room", payload["transcript"].lower())
+        self.assertTrue(payload["reply"])
+        self.assertEqual(payload["ttsBackend"], "browser")  # mock -> browser TTS
+
+    def test_stt_error_degrades_instead_of_500(self):
+        import threading
+
+        import talk_server
+
+        class RaisingProvider:
+            name = "openai"
+            llm_model = "gpt-4.1-mini"
+            stt_model = "deepgram-nova-3"
+            tts_backend = "provider"
+            tts_model = "aura-2"
+            tts_voice = "aura-2"
+
+            def transcribe_media(self, audio, content_type=""):
+                raise RuntimeError("401 Unauthorized: bad DEEPGRAM_API_KEY")
+
+        class FakeSessionAgent:
+            def __init__(self):
+                self.provider = RaisingProvider()
+                self.last_sources = []
+                self.current_language = "en"
+                self.current_locale = "en-US"
+
+        session = "test-stt-error"
+        talk_server._agent_sessions[session] = FakeSessionAgent()
+        talk_server._session_locks[session] = threading.Lock()
+        try:
+            # Must NOT raise (would 500 + leak str(exc)); degrades gracefully instead.
+            payload = _voice_agent_reply(b"audio", "audio/webm", session, "turn-1", False)
+        finally:
+            _reset_session(session)
+        self.assertTrue(payload.get("ignored"))
+        self.assertEqual(payload.get("ignoreReason"), "stt_error")
+        self.assertNotIn("Unauthorized", str(payload))  # raw error not leaked
+
+    def test_noise_transcript_is_suppressed(self):
+        import threading
+
+        import talk_server
+
+        class NoiseProvider:
+            name = "openai"; llm_model = "x"; stt_model = "s"
+            tts_backend = "provider"; tts_model = "t"; tts_voice = "v"
+
+            def transcribe_media(self, audio, content_type=""):
+                return "..."  # punctuation-only -> is_noise_transcript True
+
+        class FakeSessionAgent:
+            def __init__(self):
+                self.provider = NoiseProvider()
+                self.last_sources = []
+                self.current_language = "en"
+                self.current_locale = "en-US"
+
+        session = "test-noise-suppress"
+        talk_server._agent_sessions[session] = FakeSessionAgent()
+        talk_server._session_locks[session] = threading.Lock()
+        try:
+            payload = _voice_agent_reply(b"audio", "audio/webm", session, "turn-1", False)
+        finally:
+            _reset_session(session)
+        self.assertTrue(payload.get("ignored"))
+        self.assertEqual(payload.get("ignoreReason"), "noise_or_hallucination")
 
 
 if __name__ == "__main__":

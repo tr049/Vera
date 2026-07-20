@@ -138,8 +138,9 @@ Copy `pipeline/config.example.env` → `pipeline/.env`:
 
 | Variable | Purpose |
 |---|---|
-| `PROVIDER` | `mock` / `openai` / `groq` |
+| `PROVIDER` | LLM backend: `mock` / `openai` / `groq` |
 | `OPENAI_API_KEY` / `GROQ_API_KEY` | only the selected live provider's key is required |
+| `STT_PROVIDER` / `TTS_PROVIDER` | optional `deepgram` to route that stage to Deepgram (Nova-3 STT / Aura-2 TTS); needs `DEEPGRAM_API_KEY` + the `deepgram` extra |
 | `TTS_BACKEND` | `system` (local voice, free) or `provider` (cloud TTS) |
 | `TELEMETRY_JSONL` | JSONL trace destination (unset = telemetry off) |
 | `TELEMETRY_INCLUDE_CONTENT` | keep `false` outside local debugging |
@@ -152,7 +153,7 @@ livekit/      browser demo — stdlib HTTP bridge, LiveKit rooms, web client
 mocks/        SIP/IVR telephony simulation
 evals/        deterministic behavioral + red-team suites
 knowledge/    hotel-policy corpus (RAG source)
-pyproject.toml   uv project (extras: live / audio / livekit)
+pyproject.toml   uv project (extras: live / audio / livekit / deepgram)
 ```
 
 ## Roadmap

@@ -28,6 +28,65 @@
     ]
   },
   {
+    "id": "booking.create_flow",
+    "description": "A multi-turn booking flow ends in a confirmed reservation.",
+    "turns": [
+      {
+        "user": "I need a room from August 12 to August 14 for two guests.",
+        "expect": {
+          "contains": "Standard Queen",
+          "tools": ["check_availability"],
+          "language": "en"
+        }
+      },
+      {
+        "user": "Yes, book it for Priya Shah, priya@example.com.",
+        "expect": {
+          "contains": "VH-4827",
+          "tools": ["create_booking"],
+          "language": "en"
+        }
+      }
+    ]
+  },
+  {
+    "id": "booking.no_availability",
+    "description": "An oversized party gets a graceful transfer offer, not a fabricated room.",
+    "turns": [
+      {
+        "user": "Do you have a room for 9 guests from August 12 to August 14?",
+        "expect": {
+          "contains": "front desk",
+          "tools": ["check_availability"],
+          "language": "en"
+        }
+      }
+    ]
+  },
+  {
+    "id": "booking.persistence",
+    "description": "A booked room is no longer offered to the next caller for the same dates.",
+    "turns": [
+      {
+        "user": "Yes, book a room for Priya Shah, priya@example.com.",
+        "expect": {
+          "contains": "VH-4827",
+          "tools": ["create_booking"],
+          "language": "en"
+        }
+      },
+      {
+        "user": "What rooms are available from August 12 to August 14 for two guests?",
+        "expect": {
+          "contains": "Deluxe King",
+          "forbid": ["Standard Queen"],
+          "tools": ["check_availability"],
+          "language": "en"
+        }
+      }
+    ]
+  },
+  {
     "id": "grounding.cancellation",
     "description": "Hotel policy answers are retrieved from the local knowledge base.",
     "turns": [

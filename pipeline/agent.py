@@ -14,14 +14,22 @@ file is provider-agnostic  -  it only talks to Provider.chat().
 from __future__ import annotations
 
 import json
+import os
 import re
 import unicodedata
 from difflib import SequenceMatcher
 
+from inventory import book_if_available, is_available, parse_date
 from knowledge import search_hotel_knowledge
 from providers import Provider
 from router import AgentRouter, LANGUAGES
 from telemetry import TurnTrace
+
+# Safety cap on the tool-calling loop. A model that keeps emitting tool calls
+# (or a provider that errors) must never spin forever or dead-end the caller.
+# Real multi-tool turns settle in 2-3 iterations; 6 is generous headroom.
+# Env-overridable for load testing.
+MAX_TOOL_ITERATIONS = int(os.getenv("MAX_TOOL_ITERATIONS", "6"))
 
 SYSTEM_PROMPT = """You are a friendly phone reservations agent for Vera Hotel.
 Your only job is hotel room booking support: new reservations, availability,
@@ -264,36 +272,105 @@ def _normalize_room_type(value: str | None) -> str | None:
     return None
 
 
+def _parse_guests(args: dict) -> int | None:
+    """Guest count: default 1 when absent, or None when present but not a whole
+    number (so _validate_stay can reject it rather than crashing on int())."""
+    raw = args.get("guests")
+    if raw is None or raw == "":
+        return 1
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_stay(args: dict, guests: int | None) -> str | None:
+    """Return a spoken-friendly clarification if the stay is invalid, else None.
+
+    Guards the booking tools against bad input (non-numeric/zero guests,
+    unparseable/reversed dates) instead of silently proceeding. The live LLM works
+    the clarification into its reply; the offline mock speaks it verbatim.
+    """
+    if guests is None or guests < 1:
+        return ("I need a valid number of guests for the stay. "
+                "How many people will be staying?")
+    check_in = parse_date(args.get("check_in"))
+    check_out = parse_date(args.get("check_out"))
+    if check_in is None or check_out is None:
+        return ("I need a valid check-in and check-out date. "
+                "Could you tell me those dates again?")
+    if check_out <= check_in:
+        # A genuine new-year wrap (Dec 30 -> Jan 2) is a SHORT stay once check-out
+        # rolls to next year; a same-year reversed range (Aug 14 -> Aug 12) rolls to
+        # ~363 days and is a mistake. Accept only the short wrap; reject the rest.
+        rolled = check_out.replace(year=check_out.year + 1)
+        if not 0 < (rolled - check_in).days <= 30:
+            return ("The check-out date needs to be after the check-in date. "
+                    "Could you confirm the dates?")
+    return None
+
+
 def run_tool(name: str, args: dict) -> dict:
     """Execute a tool call. The optional 'action' key is a control signal for
     the voice loop ('transfer' -> SIP REFER, 'hangup' -> SIP BYE)."""
     if name == "check_availability":
-        guests = int(args.get("guests") or 1)
+        guests = _parse_guests(args)
+        invalid = _validate_stay(args, guests)
+        if invalid:
+            return {"result": invalid}
         preferred = _normalize_room_type(args.get("room_type"))
+        check_in = args.get("check_in")
+        check_out = args.get("check_out")
         rooms = []
         for key, room in _ROOMS.items():
             if preferred and key != preferred:
                 continue
-            if guests <= room["capacity"]:
-                rooms.append(f"{room['name']} at {room['rate']}")
+            if guests > room["capacity"]:
+                continue
+            if not is_available(key, check_in, check_out):
+                continue  # already booked for overlapping dates
+            rooms.append(f"{room['name']} at {room['rate']}")
         if not rooms:
             return {
-                "result": "No matching rooms are available for that guest count. "
+                "result": "No matching rooms are available for those dates and guest count. "
                           "Offer to transfer to the front desk.",
             }
         return {
             "result": "Available rooms for "
-                      f"{args.get('check_in')} to {args.get('check_out')}: "
+                      f"{check_in} to {check_out}: "
                       f"{'; '.join(rooms)}.",
         }
     if name == "create_booking":
+        guests = _parse_guests(args)
+        invalid = _validate_stay(args, guests)
+        if invalid:
+            return {"result": invalid}
         room_key = _normalize_room_type(args.get("room_type")) or "standard"
         room = _ROOMS[room_key]
+        if guests > room["capacity"]:  # match check_availability's capacity rule
+            return {
+                "result": f"The {room['name']} holds up to {room['capacity']} guests. "
+                          "Offer a larger room or transfer to the front desk.",
+            }
+        check_in = args.get("check_in")
+        check_out = args.get("check_out")
+        # Atomic: the availability check and the reservation happen together, so
+        # two concurrent callers can't both book the same room+dates.
+        confirmation = book_if_available(
+            room_key, check_in, check_out,
+            guest_name=args.get("guest_name"),
+            contact=args.get("contact"),
+        )
+        if confirmation is None:
+            return {
+                "result": f"I'm sorry, the {room['name']} was just booked for those dates. "
+                          "I can check other rooms or connect you with the front desk.",
+            }
         return {
-            "result": "Booking confirmed. Confirmation VH-4827 for "
+            "result": f"Booking confirmed. Confirmation {confirmation} for "
                       f"{args.get('guest_name')} in a {room['name']} from "
-                      f"{args.get('check_in')} to {args.get('check_out')} for "
-                      f"{args.get('guests')} guest(s). Confirmation sent to "
+                      f"{check_in} to {check_out} for "
+                      f"{guests} guest(s). Confirmation sent to "
                       f"{args.get('contact')}.",
         }
     if name == "search_hotel_knowledge":
@@ -358,20 +435,32 @@ class Agent:
             )
         first_model_call = True
 
-        while True:
-            with trace.span("llm", model=getattr(self.provider, "llm_model", "unknown")):
-                tool_choice = (
-                    _named_tool_choice(required_tool)
-                    if first_model_call and required_tool
-                    else None
+        for _iteration in range(MAX_TOOL_ITERATIONS):
+            try:
+                with trace.span("llm", model=getattr(self.provider, "llm_model", "unknown")):
+                    tool_choice = (
+                        _named_tool_choice(required_tool)
+                        if first_model_call and required_tool
+                        else None
+                    )
+                    resp = self.provider.chat(
+                        self.messages,
+                        tools=TOOLS,
+                        tool_choice=tool_choice,
+                    )
+                    first_model_call = False
+                    # Inside the try so a structurally-malformed response (empty
+                    # choices / missing message) degrades like an exception does.
+                    msg = resp.choices[0].message
+            except Exception as exc:
+                # Live-provider outage, rate limit, timeout, malformed response:
+                # apologize and hand off rather than crash the turn loop.
+                trace.event(
+                    "provider.error",
+                    errorType=type(exc).__name__,
+                    message=str(exc),
                 )
-                resp = self.provider.chat(
-                    self.messages,
-                    tools=TOOLS,
-                    tool_choice=tool_choice,
-                )
-                first_model_call = False
-            msg = resp.choices[0].message
+                return self._degrade_to_transfer(trace, reason="provider_error")
 
             if not msg.tool_calls:
                 reply = msg.content or ""
@@ -465,3 +554,29 @@ class Agent:
                     "content": result["result"],
                 })
             # loop again so the model can speak given the tool results
+
+        # Spent the whole tool-iteration budget without the model settling on a
+        # spoken reply (a stuck tool loop). Hand off instead of dead-ending.
+        trace.event("tool_loop.exhausted", limit=MAX_TOOL_ITERATIONS)
+        return self._degrade_to_transfer(trace, reason="max_tool_iterations")
+
+    def _degrade_to_transfer(self, trace: TurnTrace, reason: str) -> tuple[str, str]:
+        """Graceful fallback when the model/provider fails or loops.
+
+        Rather than crash or dead-end the caller, apologize and hand off to the
+        front desk (SIP REFER). Language-aware so the closing matches the call.
+        """
+        trace.event("agent.degraded", reason=reason)
+        if self.current_language == "es":
+            reply = (
+                "Lo siento, tengo un problema técnico en este momento. "
+                "Le comunico con la recepción."
+            )
+        else:
+            reply = (
+                "I'm sorry, I'm having trouble on my end right now. "
+                "Let me connect you with the front desk."
+            )
+        self.messages.append({"role": "assistant", "content": reply})
+        trace.event("assistant.response", text=reply, action="transfer")
+        return reply, "transfer"

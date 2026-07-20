@@ -55,7 +55,7 @@ Override these values in `livekit/.env` when using another server. The scripts a
 
 ## Provider Behavior
 
-`PROVIDER=openai` or `PROVIDER=groq` transcribes the recorded browser turn and runs the live hotel agent. `PROVIDER=mock` uses scripted transcripts, deterministic tools, and no paid calls.
+`PROVIDER=openai` or `PROVIDER=groq` transcribes the recorded browser turn and runs the live hotel agent. `PROVIDER=mock` uses scripted transcripts, deterministic tools, and no paid calls. To route STT/TTS to Deepgram, add `STT_PROVIDER=deepgram` / `TTS_PROVIDER=deepgram` (with `DEEPGRAM_API_KEY` and the `deepgram` extra) — the browser turn goes through the provider's `transcribe_media()`, so any backend works uniformly.
 
 `TTS_BACKEND=provider` generates WAV audio through the selected provider using `TTS_MODEL` and `TTS_VOICE`. `TTS_BACKEND=system` uses browser speech synthesis in the LiveKit UI and avoids provider TTS cost. The browser falls back to its installed voice if provider synthesis or playback fails.
 

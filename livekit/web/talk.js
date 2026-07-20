@@ -66,8 +66,10 @@ const tuning = {
   endpointSilenceMs: 650,
   sensitivity: 3.2,
   minTurnMs: 500,
-  speechConfirmationMs: 110,
-  bargeInConfirmationMs: 200,
+  // Longer confirmation windows so a brief noise transient (a door, a cough,
+  // a keyboard) no longer starts a turn or interrupts the agent.
+  speechConfirmationMs: 220,
+  bargeInConfirmationMs: 350,
   bargeInArmMs: 450,
   maxTurnMs: 20000,
 };

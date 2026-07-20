@@ -19,6 +19,7 @@ import json
 import os
 import re
 import subprocess
+import unicodedata
 import wave
 from types import SimpleNamespace as NS
 
@@ -139,9 +140,32 @@ class Provider:
         )
         return (resp if isinstance(resp, str) else resp.text).strip()
 
+    def transcribe_media(self, audio: bytes, content_type: str = "") -> str:
+        """Transcribe a browser media blob (webm/ogg/mp4). Unlike `transcribe`
+        (raw PCM), the browser sends a container, so tag the buffer by mimetype
+        (the SDK infers format from the filename)."""
+        audio_file = io.BytesIO(audio)
+        if "mp4" in content_type:
+            audio_file.name = "caller.mp4"
+        elif "ogg" in content_type:
+            audio_file.name = "caller.ogg"
+        else:
+            audio_file.name = "caller.webm"
+        transcription_args = {
+            "model": self.stt_model,
+            "file": audio_file,
+            "response_format": "text",
+        }
+        if self.stt_prompt:
+            transcription_args["prompt"] = self.stt_prompt
+        resp = self.client.audio.transcriptions.create(**transcription_args)
+        return (resp if isinstance(resp, str) else resp.text).strip()
+
     # --- TTS ---
-    def synthesize(self, text: str) -> bytes | None:
-        """Return WAV bytes for `text`, or None if played directly by the OS."""
+    def synthesize(self, text: str, language: str | None = None) -> bytes | None:
+        """Return WAV bytes for `text`, or None if played directly by the OS.
+        `language` is accepted for interface parity but unused  -  OpenAI/Groq
+        voices are multilingual; only Deepgram selects a per-language voice."""
         if self.tts_backend == "system":
             subprocess.run([os.getenv("SYSTEM_TTS_CMD", "say"), text], check=False)
             return None
@@ -171,6 +195,66 @@ def _pcm_to_wav(pcm_int16: bytes, sample_rate: int) -> io.BytesIO:
         w.writeframes(pcm_int16)
     buf.seek(0)
     return buf
+
+
+def is_noise_transcript(text: str) -> bool:
+    """True when a transcript carries no speech (empty, or punctuation/noise only).
+
+    STT models hallucinate stray tokens on silence or background noise. This is
+    deliberately conservative: it rejects only transcripts with no alphanumeric
+    content, so a real one-word answer like "Yes" / "Si" / "No" always passes.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return True
+    return not any(character.isalnum() for character in stripped)
+
+
+# Whole-transcript phrases that are almost never a real hotel caller turn: generic
+# AI-assistant greetings and content-farm sign-offs that STT emits on silence, or
+# transcribes from the agent's OWN playback bleeding into the mic (common on a phone
+# speaker). Matched against the full normalized transcript so a caller who merely
+# uses one of these words is never dropped.
+_STT_HALLUCINATIONS = frozenset({
+    "how can i help you",
+    "how can i help you today",
+    "how may i help you",
+    "how can i assist you",
+    "how can i assist you today",
+    "como puedo ayudarte",
+    "como puedo ayudarte hoy",
+    "como puedo ayudarle",
+    "como puedo asistirte",
+    "en que puedo ayudarte",
+    "en que puedo ayudarle",
+    "thanks for watching",
+    "thank you for watching",
+    "please subscribe",
+    "subscribe to my channel",
+    "like and subscribe",
+})
+
+
+def _normalize_transcript(text: str) -> str:
+    """Lowercase, strip accents (so "cómo" == "como"), keep only words/digits."""
+    decomposed = unicodedata.normalize("NFKD", (text or "").lower())
+    no_accents = "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+    return " ".join(re.findall(r"[a-z0-9]+", no_accents))
+
+
+def is_stt_hallucination(text: str) -> bool:
+    """True for transcripts that are an STT hallucination or agent-playback echo
+    rather than a real caller turn (e.g. "ChatGPT, ¿Cómo puedo ayudarte hoy?").
+
+    Only whole-transcript matches count, plus any mention of "chatgpt"/"openai"
+    (a hotel caller never says those), so real speech is not affected.
+    """
+    normalized = _normalize_transcript(text)
+    if not normalized:
+        return False
+    if "chatgpt" in normalized or "openai" in normalized:
+        return True
+    return normalized in _STT_HALLUCINATIONS
 
 
 # --- Mock backend: full offline end-to-end, no network / key / SDK ---
@@ -228,6 +312,16 @@ class MockProvider:
                 if spanish:
                     return _mk_text(f"{result} ¿Quiere que reserve una de estas habitaciones?")
                 return _mk_text(f"{result} Would you like me to book one of these?")
+            if result.lower().startswith("no matching rooms"):
+                if spanish:
+                    return _mk_text(
+                        "No tengo una habitación disponible para esas fechas. "
+                        "¿Quiere que le comunique con la recepción?"
+                    )
+                return _mk_text(
+                    "I don't have a room available for those dates. "
+                    "I can connect you with the front desk if you'd like."
+                )
             if result.lower().startswith("booking confirmed"):
                 if spanish:
                     confirmation = re.search(r"VH-\d+", result)
@@ -293,8 +387,7 @@ class MockProvider:
             return _mk_tool("check_availability", {
                 "check_in": "August 12",
                 "check_out": "August 14",
-                "guests": 2,
-                "room_type": "standard",
+                "guests": _mock_guest_count(text),
             })
         if spanish:
             return _mk_text("Solo puedo ayudar con reservas de hotel. ¿Quiere reservar, cambiar o cancelar una estancia?")
@@ -306,7 +399,11 @@ class MockProvider:
         self._stt_i += 1
         return phrase
 
-    def synthesize(self, text: str) -> bytes | None:
+    def transcribe_media(self, audio: bytes = b"", content_type: str = "") -> str:
+        """Browser-audio path in mock mode: same scripted phrases as transcribe."""
+        return self.transcribe(b"")
+
+    def synthesize(self, text: str, language: str | None = None) -> bytes | None:
         """No cloud TTS. Optionally use a local voice command; else print-only."""
         if self.tts_backend == "system":
             subprocess.run([os.getenv("SYSTEM_TTS_CMD", "say"), text], check=False)
@@ -351,6 +448,26 @@ def _mock_off_topic(text: str) -> bool:
     ))
 
 
+def _mock_guest_count(text: str) -> int:
+    """Parse a digit guest count from the caller text (e.g. "9 guests" -> 9).
+
+    Defaults to 2 (the demo party size) when no explicit number is present, so
+    existing word-based flows ("two guests", "dos personas") are unchanged. This
+    lets the offline mock actually reach the no-availability path for a large
+    party instead of always fitting a room.
+    """
+    match = re.search(
+        r"(\d+)\s*(?:guests?|people|persons?|adults?|personas?|hu[eé]spedes?)",
+        text,
+    )
+    if match:
+        try:
+            return max(1, int(match.group(1)))
+        except ValueError:
+            return 2
+    return 2
+
+
 def _previous_tool_arguments(messages: list[dict]) -> dict:
     if len(messages) < 2:
         return {}
@@ -386,9 +503,70 @@ def _grounded_policy_reply(result: str, spanish: bool, query: str) -> str:
     return "I found the relevant Vera Hotel policy and can help apply it to your reservation."
 
 
+class SpeechOverrideProvider:
+    """Composes a base LLM provider (groq/openai) with a Deepgram speech backend.
+
+    Deepgram has no LLM, so `chat()` always goes to the base provider; STT and/or
+    TTS are routed to Deepgram per the STT_PROVIDER / TTS_PROVIDER flags. This is
+    how a two-vendor stack (e.g. Groq LLM + Deepgram speech) stays behind the one
+    provider interface the agent and servers already consume.
+    """
+
+    def __init__(self, base, speech, *, use_stt: bool, use_tts: bool):
+        self._base = base
+        self._speech = speech
+        self._use_stt = use_stt
+        self._use_tts = use_tts
+        # Name reflects which stages Deepgram actually handles (e.g. "groq+dg-stt").
+        stages = [label for label, on in (("dg-stt", use_stt), ("dg-tts", use_tts)) if on]
+        self.name = "+".join([base.name, *stages])
+        # Mirror the base LLM attributes that telemetry / UI read via getattr.
+        self.llm_model = base.llm_model
+        self.tts_backend = getattr(base, "tts_backend", "provider")
+        # Stage-model labels reflect who actually handles each stage.
+        self.stt_model = speech.stt_model if use_stt else getattr(base, "stt_model", "unknown")
+        self.tts_model = speech.tts_model if use_tts else getattr(base, "tts_model", "unknown")
+        self.tts_voice = speech.tts_voice if use_tts else getattr(base, "tts_voice", "unknown")
+
+    def chat(self, messages, tools=None, tool_choice=None):
+        return self._base.chat(messages, tools=tools, tool_choice=tool_choice)
+
+    def transcribe(self, pcm_int16, sample_rate: int = 16000):
+        target = self._speech if self._use_stt else self._base
+        return target.transcribe(pcm_int16, sample_rate)
+
+    def transcribe_media(self, audio, content_type: str = ""):
+        target = self._speech if self._use_stt else self._base
+        return target.transcribe_media(audio, content_type)
+
+    def synthesize(self, text, language=None):
+        # Deepgram TTS only when cloud TTS is active; TTS_BACKEND=system stays local.
+        # `language` lets Deepgram pick the native EN/ES voice per turn.
+        if self._use_tts and self.tts_backend == "provider":
+            return self._speech.synthesize(text, language)
+        return self._base.synthesize(text, language)
+
+
 def make_provider(name: str | None = None):
-    """Factory: returns MockProvider for PROVIDER=mock, else a live Provider."""
+    """Factory: MockProvider for PROVIDER=mock, else a live Provider  -  optionally
+    wrapped so STT_PROVIDER/TTS_PROVIDER=deepgram route those stages to Deepgram."""
     name = (name or os.getenv("PROVIDER", "groq")).lower()
     if name == "mock":
-        return MockProvider()
-    return Provider(name)
+        return MockProvider()  # overrides ignored: offline path stays key-free
+
+    # Validate speech overrides BEFORE building anything (fail fast, no key needed).
+    stt_override = os.getenv("STT_PROVIDER", "").strip().lower()
+    tts_override = os.getenv("TTS_PROVIDER", "").strip().lower()
+    for label, value in (("STT_PROVIDER", stt_override), ("TTS_PROVIDER", tts_override)):
+        if value and value != "deepgram":
+            raise ValueError(f"Unknown {label}={value!r}; only 'deepgram' is supported")
+    use_stt = stt_override == "deepgram"
+    use_tts = tts_override == "deepgram"
+
+    base = Provider(name)
+    if not (use_stt or use_tts):
+        return base
+
+    from deepgram_speech import DeepgramSpeech  # lazy: only when actually selected
+    speech = DeepgramSpeech()
+    return SpeechOverrideProvider(base, speech, use_stt=use_stt, use_tts=use_tts)

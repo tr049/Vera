@@ -16,7 +16,7 @@ uv sync --extra audio --extra live   # + real microphone (sounddevice, webrtcvad
 cp config.example.env .env
 ```
 
-Select `PROVIDER=mock`, `PROVIDER=openai`, or `PROVIDER=groq` in `.env`. Only a live provider requires an API key.
+Select `PROVIDER=mock`, `PROVIDER=openai`, or `PROVIDER=groq` in `.env` (this picks the LLM). Only a live provider requires an API key. Optionally set `STT_PROVIDER=deepgram` and/or `TTS_PROVIDER=deepgram` to route just those stages to Deepgram (Nova-3 / Aura-2) — needs `DEEPGRAM_API_KEY` and `uv sync --extra live --extra deepgram`.
 
 ## Verify Offline
 

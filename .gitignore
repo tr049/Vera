@@ -6,9 +6,17 @@ __pycache__/
 .venv/
 venv/
 
-# Secrets / local env — config.example.env stays tracked as the template
+# Secrets / local env — config.example.env stays tracked as the template.
+# Cover .env plus .env.* variants and common secret filenames so protection does
+# not depend on a machine-local global gitignore (which a fresh clone won't have).
 .env
 **/.env
+.env.*
+**/.env.*
+*.pem
+*.key
+*.p12
+secrets.json
 
 # Runtime telemetry (talk_server.py writes logs/voice-events.jsonl here)
 logs/

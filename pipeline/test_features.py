@@ -15,6 +15,7 @@ from inventory import active_bookings, reset_inventory
 from knowledge import search_hotel_knowledge
 from providers import (
     MockProvider,
+    Provider,
     SpeechOverrideProvider,
     _env_or_default,
     _mk_tool,
@@ -24,6 +25,7 @@ from providers import (
 )
 from router import AgentRouter
 from scale_check import estimate_capacity
+from streaming import SentenceBuffer, streaming_enabled
 from telemetry import TurnTrace
 
 
@@ -368,6 +370,12 @@ class _StubBase:
     def chat(self, messages, tools=None, tool_choice=None):
         return "chat"
 
+    def chat_stream(self, messages, tools=None, tool_choice=None, on_delta=None):
+        from types import SimpleNamespace as NS
+        if on_delta:
+            on_delta("chat")
+        return NS(choices=[NS(message=NS(content="chat", tool_calls=None))])
+
     def transcribe(self, pcm, sample_rate=16000):
         return "base-transcribe"
 
@@ -528,6 +536,208 @@ class DatePromptTests(unittest.TestCase):
         self.assertIn("resolve them YOURSELF", guidance)
         self.assertIn("upcoming Saturday", guidance)       # weekend convention is stated
         self.assertIn("starts today", guidance)            # today-is-weekend clause
+
+
+class _StubStreamClient:
+    """Fake OpenAI-dialect client whose chat.completions.create(stream=True)
+    yields the given (content, tool_calls) chunks as delta objects."""
+
+    def __init__(self, chunks):
+        from types import SimpleNamespace as NS
+        self._chunks = chunks
+        self.chat = NS(completions=NS(create=self._create))
+
+    def _create(self, **kwargs):
+        from types import SimpleNamespace as NS
+        assert kwargs.get("stream") is True  # chat_stream must set stream=True
+        return (NS(choices=[NS(delta=NS(content=c, tool_calls=tc))])
+                for c, tc in self._chunks)
+
+
+class StreamingTests(unittest.TestCase):
+    def test_sentence_buffer_emits_on_terminators_and_flushes_tail(self):
+        buf = SentenceBuffer()
+        self.assertEqual(buf.feed("Hello there"), [])
+        self.assertEqual(buf.feed("! How can I help you"), ["Hello there!"])
+        self.assertEqual(buf.feed("? "), ["How can I help you?"])
+        self.assertEqual(buf.feed("Room is $3.50 a night"), [])  # decimal not split
+        self.assertEqual(buf.flush(), "Room is $3.50 a night")
+        self.assertEqual(buf.flush(), "")  # buffer cleared after flush
+
+    def test_sentence_buffer_splits_multiple_in_one_delta(self):
+        buf = SentenceBuffer()
+        self.assertEqual(
+            buf.feed("One. Two! Three? four"),
+            ["One.", "Two!", "Three?"],
+        )
+        self.assertEqual(buf.flush(), "four")
+
+    def test_streaming_enabled_requires_flag_and_capability(self):
+        class Capable:
+            tts_backend = "provider"
+
+            def chat_stream(self, *a, **k):
+                return None
+
+        cap = Capable()
+        with patch.dict(os.environ, {"STREAMING": "off"}):
+            self.assertFalse(streaming_enabled(cap))            # flag off -> batch
+        with patch.dict(os.environ, {"STREAMING": "on"}):
+            self.assertTrue(streaming_enabled(cap))             # flag on + capable
+            self.assertFalse(streaming_enabled(cap, text_mode=True))   # text -> batch
+            self.assertFalse(streaming_enabled(make_provider("mock")))  # no chat_stream
+            cap.tts_backend = "system"
+            self.assertFalse(streaming_enabled(cap))            # local TTS -> batch
+
+    def test_chat_stream_streams_text_and_rebuilds_message(self):
+        provider = Provider.__new__(Provider)  # bypass __init__ (no key/SDK)
+        provider.llm_model = "gpt-4.1-mini"
+        provider.client = _StubStreamClient([("Hello", None), (" there.", None)])
+        deltas = []
+        resp = provider.chat_stream([{"role": "user", "content": "hi"}],
+                                    tools=[{"type": "function"}], on_delta=deltas.append)
+        msg = resp.choices[0].message
+        self.assertEqual(deltas, ["Hello", " there."])          # streamed in order
+        self.assertEqual(msg.content, "Hello there.")           # reassembled == batch
+        self.assertIsNone(msg.tool_calls)
+
+    def test_chat_stream_reassembles_tool_call_fragments(self):
+        from types import SimpleNamespace as NS
+        provider = Provider.__new__(Provider)
+        provider.llm_model = "gpt-4.1-mini"
+        frag_a = NS(index=0, id="call_1",
+                    function=NS(name="check_availability", arguments='{"gu'))
+        frag_b = NS(index=0, id=None, function=NS(name=None, arguments='ests": 2}'))
+        provider.client = _StubStreamClient([(None, [frag_a]), (None, [frag_b])])
+        fired = []
+        resp = provider.chat_stream([], tools=[{"type": "function"}], on_delta=fired.append)
+        msg = resp.choices[0].message
+        self.assertEqual(fired, [])                              # no content -> no on_delta
+        self.assertIsNone(msg.content)
+        self.assertEqual(len(msg.tool_calls), 1)
+        call = msg.tool_calls[0]
+        self.assertEqual(call.id, "call_1")
+        self.assertEqual(call.function.name, "check_availability")
+        self.assertEqual(call.function.arguments, '{"guests": 2}')  # fragments joined
+
+    def test_speech_override_chat_stream_delegates_to_base(self):
+        provider = SpeechOverrideProvider(_StubBase(), _StubSpeech(), use_stt=True, use_tts=False)
+        fired = []
+        resp = provider.chat_stream([], on_delta=fired.append)
+        self.assertEqual(fired, ["chat"])                       # base's on_delta ran
+        self.assertEqual(resp.choices[0].message.content, "chat")
+
+    def test_agent_respond_streams_deltas_with_reply_unchanged(self):
+        from types import SimpleNamespace as NS
+
+        class FakeStreamProvider:
+            name = "fake"
+            llm_model = "fake-llm"
+            tts_backend = "provider"
+
+            def chat(self, messages, tools=None, tool_choice=None):
+                raise AssertionError("batch chat() must not run when streaming")
+
+            def chat_stream(self, messages, tools=None, tool_choice=None, on_delta=None):
+                for piece in ("Sure", ", ", "booking now."):
+                    if on_delta:
+                        on_delta(piece)
+                return NS(choices=[NS(message=NS(content="Sure, booking now.", tool_calls=None))])
+
+        agent = Agent(FakeStreamProvider())
+        deltas = []
+        reply, action = agent.respond("book a room",
+                                      trace=TurnTrace(session_id="s"), on_delta=deltas.append)
+        self.assertEqual("".join(deltas), reply)                # streamed text == reply
+        self.assertEqual(reply, "Sure, booking now.")
+        self.assertIsNone(action)
+
+    def test_mock_ignores_on_delta_and_matches_batch(self):
+        reset_inventory()
+        batch_reply, batch_action = Agent(make_provider("mock")).respond(
+            "I need a room for two guests", trace=TurnTrace(session_id="s"))
+        reset_inventory()
+        deltas = []
+        stream_reply, stream_action = Agent(make_provider("mock")).respond(
+            "I need a room for two guests", trace=TurnTrace(session_id="s"),
+            on_delta=deltas.append)
+        self.assertEqual(batch_reply, stream_reply)             # identical reply
+        self.assertEqual(batch_action, stream_action)
+        self.assertEqual(deltas, [])                            # mock never streams
+
+    def test_tool_preamble_is_not_fused_into_reply(self):
+        # A model that narrates a preamble alongside a tool call must NOT have that
+        # preamble concatenated (spaceless) into the final reply. on_reset drops it.
+        import voice_loop
+        from types import SimpleNamespace as NS
+
+        class PreambleProvider:
+            name = "fake"; llm_model = "fake"; tts_backend = "provider"
+
+            def __init__(self):
+                self.calls = 0
+
+            def chat(self, *a, **k):
+                raise AssertionError("batch chat() must not run when streaming")
+
+            def chat_stream(self, messages, tools=None, tool_choice=None, on_delta=None):
+                self.calls += 1
+                if self.calls == 1:  # preamble (no terminator) alongside a tool call
+                    if on_delta:
+                        on_delta("One moment while I check")
+                    tc = NS(id="c1", type="function", function=NS(
+                        name="check_availability",
+                        arguments='{"check_in":"August 12","check_out":"August 14","guests":2}'))
+                    return NS(choices=[NS(message=NS(content="One moment while I check", tool_calls=[tc]))])
+                if on_delta:  # the actual reply
+                    on_delta("The Standard Queen is available.")
+                return NS(choices=[NS(message=NS(content="The Standard Queen is available.", tool_calls=None))])
+
+        spoken: list[str] = []
+        original = voice_loop._play_sentence
+        voice_loop._play_sentence = lambda provider, sentence, language: spoken.append(sentence)
+        try:
+            reset_inventory()
+            provider = PreambleProvider()
+            reply, _ = voice_loop._respond_streaming(
+                provider, Agent(provider), "book a room", TurnTrace(session_id="s"))
+        finally:
+            voice_loop._play_sentence = original
+
+        self.assertEqual(reply, "The Standard Queen is available.")
+        self.assertEqual(spoken, ["The Standard Queen is available."])   # preamble dropped
+        self.assertNotIn("checkThe", "".join(spoken))                    # no spaceless fusion
+
+    def test_mid_stream_error_still_speaks_the_degrade_reply(self):
+        # If the stream drops after partial content, the caller must still hear the
+        # transfer apology (not just an orphaned fragment). on_reset discards the partial.
+        import voice_loop
+
+        class DroppingProvider:
+            name = "fake"; llm_model = "fake"; tts_backend = "provider"
+
+            def chat(self, *a, **k):
+                raise AssertionError("batch chat() must not run when streaming")
+
+            def chat_stream(self, messages, tools=None, tool_choice=None, on_delta=None):
+                if on_delta:
+                    on_delta("The room ")          # partial, no terminator...
+                raise RuntimeError("connection dropped")  # ...then the stream fails
+
+        spoken: list[str] = []
+        original = voice_loop._play_sentence
+        voice_loop._play_sentence = lambda provider, sentence, language: spoken.append(sentence)
+        try:
+            provider = DroppingProvider()
+            reply, action = voice_loop._respond_streaming(
+                provider, Agent(provider), "any room?", TurnTrace(session_id="s"))
+        finally:
+            voice_loop._play_sentence = original
+
+        self.assertEqual(action, "transfer")           # degraded gracefully
+        self.assertTrue(reply.strip())                 # an apology was returned
+        self.assertEqual(spoken, [reply])              # ...and it was actually spoken
+        self.assertNotIn("The room", spoken)           # orphaned partial was dropped
 
 
 if __name__ == "__main__":

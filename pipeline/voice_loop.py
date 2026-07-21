@@ -22,6 +22,7 @@ import uuid
 from agent import Agent
 from inventory import reset_inventory
 from providers import is_noise_transcript, is_stt_hallucination, make_provider
+from streaming import SentenceBuffer, streaming_enabled
 from telemetry import TurnTrace, format_trace, write_trace
 
 try:
@@ -106,14 +107,74 @@ def speak(provider: Provider, text: str, language: str | None = None) -> None:
         play_wav_bytes(audio)
 
 
+def _play_sentence(provider: Provider, sentence: str, language: str | None) -> None:
+    """Speak one streamed sentence. Exception-safe by design: this runs inside
+    the LLM stream's on_delta callback, so a TTS error must NOT propagate (it
+    would wrongly degrade the turn to a transfer). Swallow it with a warning,
+    mirroring the batch path's TTS guard."""
+    print(f"agent> {sentence}")
+    try:
+        audio = provider.synthesize(sentence, language)
+        if audio:
+            play_wav_bytes(audio)
+    except Exception as exc:
+        print(f"  [TTS playback failed: {type(exc).__name__}] {exc}")
+
+
+def _respond_streaming(provider: Provider, agent: Agent, user_text: str,
+                       trace: TurnTrace) -> tuple[str, str | None]:
+    """Streaming turn: play each sentence as the model produces it, cutting
+    time-to-first-audio. Returns (reply, action) exactly like the batch path,
+    with the full reply text unchanged.
+
+    The buffer + `spoke_reply` flag track only the CURRENT reply segment.
+    `on_reset` (fired by respond at a tool call or a degrade) discards a buffered
+    preamble/partial so it can neither fuse with the final reply nor suppress a
+    degrade apology. TTS runs inside the exception-safe _play_sentence, so a
+    playback error never degrades the turn."""
+    buffer = SentenceBuffer()
+    # spoke_reply tracks the CURRENT segment (on_reset clears it); first_audio is
+    # turn-scoped so the latency event fires once even across a preamble + reply.
+    state = {"spoke_reply": False, "first_audio": False}
+
+    def emit(sentence: str) -> None:
+        if not state["first_audio"]:
+            trace.event("tts.first_audio", model=getattr(provider, "tts_model", "unknown"))
+            state["first_audio"] = True
+        state["spoke_reply"] = True
+        _play_sentence(provider, sentence, agent.current_language)
+
+    def on_delta(delta: str) -> None:
+        for sentence in buffer.feed(delta):
+            emit(sentence)
+
+    def on_reset() -> None:
+        # This segment (a preamble, or an abandoned partial before a degrade) is
+        # not part of the final reply -- drop it and start the next one clean.
+        buffer.flush()
+        state["spoke_reply"] = False
+
+    reply, action = agent.respond(user_text, trace=trace, on_delta=on_delta, on_reset=on_reset)
+    tail = buffer.flush()
+    if tail:
+        emit(tail)
+    if not state["spoke_reply"] and reply.strip():
+        # Final reply never streamed (degrade replaced it, or a bare non-sentence)
+        # -- speak it whole so the caller always hears the returned reply.
+        emit(reply)
+    return reply, action
+
+
 # --- The loop ---
 
 def run(text_mode: bool) -> None:
     provider = make_provider()
     reset_inventory()  # fresh booking store for this call
     agent = Agent(provider)
+    stream = streaming_enabled(provider, text_mode=text_mode)  # opt-in, off by default
     session_id = f"cli-{uuid.uuid4().hex[:10]}"
-    print(f"Provider: {provider.name} | LLM: {provider.llm_model}")
+    print(f"Provider: {provider.name} | LLM: {provider.llm_model}"
+          f"{' | streaming' if stream else ''}")
     print("Call started. Say/type 'goodbye' or Ctrl-C to hang up.\n")
 
     try:
@@ -142,15 +203,18 @@ def run(text_mode: bool) -> None:
             if not user_text.strip():
                 continue
 
-            reply, action = agent.respond(user_text, trace=trace)
-
-            # Wrap TTS on its own so a playback error can't drop a pending
-            # hangup/transfer (the call must still end).
-            try:
-                with trace.span("tts", model=getattr(provider, "tts_model", "unknown")):
-                    speak(provider, reply, agent.current_language)
-            except Exception as exc:
-                print(f"  [TTS playback failed: {type(exc).__name__}] {exc}")
+            if stream:
+                # Streaming path: sentences are spoken as the model produces them.
+                reply, action = _respond_streaming(provider, agent, user_text, trace)
+            else:
+                reply, action = agent.respond(user_text, trace=trace)
+                # Wrap TTS on its own so a playback error can't drop a pending
+                # hangup/transfer (the call must still end).
+                try:
+                    with trace.span("tts", model=getattr(provider, "tts_model", "unknown")):
+                        speak(provider, reply, agent.current_language)
+                except Exception as exc:
+                    print(f"  [TTS playback failed: {type(exc).__name__}] {exc}")
 
             payload = trace.finish(action=action, sources=agent.last_sources)
             write_trace(payload)

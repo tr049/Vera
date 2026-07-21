@@ -423,12 +423,24 @@ class Agent:
         self.last_trace: TurnTrace | None = None
         self.last_sources: list[str] = []
 
-    def respond(self, user_text: str, trace: TurnTrace | None = None) -> tuple[str, str | None]:
+    def respond(self, user_text: str, trace: TurnTrace | None = None,
+                on_delta=None, on_reset=None) -> tuple[str, str | None]:
         """Take the caller's transcript, return (spoken_reply, action|None).
 
         Loops until the model produces a plain text reply, executing any tool
         calls in between. `action` is the last control signal seen (transfer/
         hangup), which the voice loop uses to end the call.
+
+        Streaming callbacks (used only when the provider supports `chat_stream`;
+        both default None, so the mock/eval path is byte-identical to before):
+        - `on_delta(text)` receives the model's content tokens as they stream.
+          It CAN also fire on a tool-calling turn — some models emit a spoken
+          preamble alongside tool_calls — so the returned `reply` (the final,
+          no-tool message content) is the source of truth, not the token sum.
+        - `on_reset()` fires at each reply-segment boundary (a tool call is about
+          to run, or the turn is degrading to a transfer), signalling the caller
+          to drop any buffered preamble/partial that is NOT part of the final
+          reply, so it can neither fuse with it nor suppress a degrade message.
         """
         trace = trace or TurnTrace()
         self.last_trace = trace
@@ -472,11 +484,19 @@ class Agent:
                         if first_model_call and required_tool
                         else None
                     )
-                    resp = self.provider.chat(
-                        self.messages,
-                        tools=TOOLS,
-                        tool_choice=tool_choice,
-                    )
+                    if on_delta is not None and getattr(self.provider, "chat_stream", None):
+                        resp = self.provider.chat_stream(
+                            self.messages,
+                            tools=TOOLS,
+                            tool_choice=tool_choice,
+                            on_delta=on_delta,
+                        )
+                    else:
+                        resp = self.provider.chat(
+                            self.messages,
+                            tools=TOOLS,
+                            tool_choice=tool_choice,
+                        )
                     first_model_call = False
                     # Inside the try so a structurally-malformed response (empty
                     # choices / missing message) degrades like an exception does.
@@ -489,6 +509,8 @@ class Agent:
                     errorType=type(exc).__name__,
                     message=str(exc),
                 )
+                if on_reset:
+                    on_reset()  # drop any partial stream so the degrade reply is spoken
                 return self._degrade_to_transfer(trace, reason="provider_error")
 
             if not msg.tool_calls:
@@ -497,6 +519,10 @@ class Agent:
                 trace.event("assistant.response", text=reply, action=action)
                 return reply, action
 
+            # A tool call ends this reply segment: any streamed preamble is not
+            # part of the final reply, so tell the caller to drop it.
+            if on_reset:
+                on_reset()
             # Record the assistant's tool-call turn, then answer each call.
             self.messages.append({
                 "role": "assistant",
@@ -587,6 +613,8 @@ class Agent:
         # Spent the whole tool-iteration budget without the model settling on a
         # spoken reply (a stuck tool loop). Hand off instead of dead-ending.
         trace.event("tool_loop.exhausted", limit=MAX_TOOL_ITERATIONS)
+        if on_reset:
+            on_reset()  # drop any partial stream so the degrade reply is spoken
         return self._degrade_to_transfer(trace, reason="max_tool_iterations")
 
     def _degrade_to_transfer(self, trace: TurnTrace, reason: str) -> tuple[str, str]:

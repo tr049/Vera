@@ -123,6 +123,57 @@ class Provider:
             kwargs["temperature"] = 0.3
         return self.client.chat.completions.create(**kwargs)
 
+    def chat_stream(self, messages, tools=None, tool_choice=None, on_delta=None):
+        """Streaming variant of chat(): fire on_delta(text) as content arrives,
+        and reconstruct the SAME response shape chat() returns (choices[0].message
+        with content + tool_calls) so the agent's tool loop is unchanged. on_delta
+        can fire even on a tool-calling turn if the model emits a content preamble
+        alongside tool_calls; tool deltas arrive as fragments (id/name on the
+        first, arguments concatenated by index) and are reassembled here."""
+        kwargs = {
+            "model": self.llm_model,
+            "messages": messages,
+            "tools": tools or None,
+            "tool_choice": (tool_choice or "auto") if tools else None,
+            "stream": True,
+        }
+        if self.llm_model.startswith(_REASONING_MODEL_PREFIXES):
+            kwargs["reasoning_effort"] = os.getenv("REASONING_EFFORT", "none")
+        else:
+            kwargs["temperature"] = 0.3
+
+        content_parts: list[str] = []
+        fragments: dict[int, dict] = {}  # tool-call index -> {id, name, args}
+        for chunk in self.client.chat.completions.create(**kwargs):
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            delta = choices[0].delta
+            piece = getattr(delta, "content", None)
+            if piece:
+                content_parts.append(piece)
+                if on_delta:
+                    on_delta(piece)
+            for frag in (getattr(delta, "tool_calls", None) or []):
+                index = getattr(frag, "index", 0)  # real providers always send it; be safe
+                slot = fragments.setdefault(index, {"id": None, "name": None, "args": ""})
+                if getattr(frag, "id", None):
+                    slot["id"] = frag.id
+                fn = getattr(frag, "function", None)
+                if fn is not None:
+                    if getattr(fn, "name", None):
+                        slot["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["args"] += fn.arguments
+
+        tool_calls = [
+            NS(id=f["id"], type="function",
+               function=NS(name=f["name"], arguments=f["args"]))
+            for _, f in sorted(fragments.items())
+        ] or None
+        content = "".join(content_parts) or None
+        return NS(choices=[NS(message=NS(content=content, tool_calls=tool_calls))])
+
     # --- STT ---
     def transcribe(self, pcm_int16: bytes, sample_rate: int = 16000) -> str:
         """Transcribe raw 16-bit mono PCM via Whisper."""
@@ -535,6 +586,12 @@ class SpeechOverrideProvider:
 
     def chat(self, messages, tools=None, tool_choice=None):
         return self._base.chat(messages, tools=tools, tool_choice=tool_choice)
+
+    def chat_stream(self, messages, tools=None, tool_choice=None, on_delta=None):
+        # Deepgram has no LLM, so streaming stays on the base provider.
+        return self._base.chat_stream(
+            messages, tools=tools, tool_choice=tool_choice, on_delta=on_delta,
+        )
 
     def transcribe(self, pcm_int16, sample_rate: int = 16000):
         target = self._speech if self._use_stt else self._base

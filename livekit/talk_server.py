@@ -111,6 +111,11 @@ def _finish_response(agent, trace, reply: str, action: str | None, **extra) -> d
         "locale": agent.current_locale,
         "sources": sources,
         "trace": payload,
+        # Pipeline mode for the UI badge. The browser turn is the BATCH cascade
+        # (one JSON response with the full reply + audio). Streaming (Option A,
+        # sentence-by-sentence) currently lives in the CLI voice_loop; when the
+        # browser transport is streamed (Phase 2) this becomes "streaming".
+        "pipeline": "batch",
         **extra,
     }
 

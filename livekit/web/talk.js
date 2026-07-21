@@ -1,5 +1,11 @@
 import { Room, RoomEvent, Track } from "/node_modules/livekit-client/dist/livekit-client.esm.mjs";
 
+// Motion (motion.dev) is OPTIONAL polish, loaded lazily below so a missing or
+// failed vendor file can NEVER brick the app -- the UI just runs without the
+// spring choreography. `animate`/`stagger` stay null until (and unless) it loads.
+let animate = null;
+let stagger = null;
+
 const callerRoot = document.querySelector('[data-client="caller"]');
 const agentRoot = document.querySelector('[data-client="agent"]');
 const callerStatus = callerRoot.querySelector('[data-role="status"]');
@@ -30,6 +36,72 @@ const metrics = {
   firstAudio: document.querySelector("#metric-first-audio"),
   barge: document.querySelector("#metric-barge"),
 };
+
+const voiceOrb = document.querySelector(".voice-orb");
+
+// Flash a metric tile when its value changes -- self-contained, so the many
+// `metrics.*.textContent = ...` assignment sites need no edits. Reduced-motion
+// keeps the colour flash (CSS) and drops the translate.
+for (const metricEl of Object.values(metrics)) {
+  const tile = metricEl?.closest("div");
+  if (!tile) continue;
+  let last = metricEl.textContent;
+  new MutationObserver(() => {
+    if (metricEl.textContent === last) return; // don't flash on identical rewrites
+    last = metricEl.textContent;
+    tile.classList.remove("bump");
+    void tile.offsetWidth; // reflow so the animation restarts on every change
+    tile.classList.add("bump");
+  }).observe(metricEl, { childList: true, characterData: true, subtree: true });
+}
+
+// -- Motion (motion.dev, vendored + offline) for one-shot spring choreography.
+// The continuous voice-state loops stay pure CSS (compositor); Motion is used
+// only for enters/reveals so it never competes with the realtime audio loop.
+const pipelineModeEl = document.querySelector("#pipeline-mode");
+const pipelineModeLabel = document.querySelector("#pipeline-mode-label");
+const REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Lazy-load Motion, then run the entrance. Transform-only (panels keep opacity 1)
+// so a throttled/backgrounded tab that stalls WAAPI can never leave the UI hidden;
+// a short fail-safe cancels any lingering animation so nothing sticks at the offset.
+if (!REDUCED_MOTION) {
+  import("/web/vendor/motion.min.mjs")
+    .then((motion) => {
+      animate = motion.animate;
+      stagger = motion.stagger;
+      animate("main > *", { y: [18, 0] },
+        { delay: stagger(0.05), duration: 0.5, ease: [0.05, 0.7, 0.1, 1] });
+      window.setTimeout(() => {
+        document.querySelectorAll("main > *").forEach((el) =>
+          el.getAnimations().forEach((a) => a.cancel()));
+      }, 1200);
+    })
+    .catch(() => {}); // Motion unavailable -> no spring polish; the app still works
+}
+
+// Spring a newly-inserted transcript bubble in (side-aware). Reduced-motion:
+// skipped, so the bubble just appears (its default opacity is 1).
+function springInBubble(node, role) {
+  if (REDUCED_MOTION || !animate) return;  // no Motion loaded -> bubble just appears
+  const fromX = role === "caller" ? -14 : role === "agent" ? 14 : 0;
+  // transform-only (no opacity) so the bubble is always visible even if throttled.
+  animate(
+    node,
+    { x: [fromX, 0], y: [12, 0], scale: [0.96, 1] },
+    { type: "spring", stiffness: 300, damping: 24 },
+  );
+}
+
+// Reflect the response pipeline (batch vs streaming) in the header badge.
+function setPipelineMode(mode) {
+  if (!pipelineModeEl) return;
+  const streaming = mode === "streaming";
+  pipelineModeEl.dataset.mode = streaming ? "streaming" : "batch";
+  if (pipelineModeLabel) {
+    pipelineModeLabel.textContent = streaming ? "Streaming cascade" : "Batch cascade";
+  }
+}
 
 const sessionId = `browser-${crypto.randomUUID()}`;
 let turnCounter = 0;
@@ -84,9 +156,27 @@ function setCallControls(connected) {
   agentRoot.classList.toggle("connected", connected);
 }
 
+// Every voice-state transition already flows through setListeningState, so this
+// one chokepoint drives the hero orb's motion-shape (idle/listening/thinking/
+// speaking/bargein/muted/error) with no changes to the turn/VAD logic.
+const VOICE_ORB_STATE = {
+  Idle: "idle",
+  Calibrating: "idle",
+  Listening: "listening",
+  "Caller speaking": "listening",
+  Processing: "thinking",
+  "Agent speaking": "speaking",
+  Interrupted: "bargein",
+  Muted: "muted",
+  Error: "error",
+  "Connection failed": "error",
+  "Mute failed": "error",
+};
+
 function setListeningState(state, detail) {
   listeningStateEl.textContent = state;
   voiceStatusEl.textContent = detail;
+  if (voiceOrb) voiceOrb.dataset.voiceState = VOICE_ORB_STATE[state] || "idle";
 }
 
 function addTranscript(role, text, meta = "") {
@@ -100,6 +190,7 @@ function addTranscript(role, text, meta = "") {
   body.textContent = text;
   item.append(label, body);
   transcriptEl.appendChild(item);
+  springInBubble(item, role);
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
   return item;
 }
@@ -110,6 +201,7 @@ function addInterruption() {
   item.className = "bubble interruption";
   item.textContent = "Caller interrupted agent playback";
   transcriptEl.appendChild(item);
+  springInBubble(item, "interruption");
   transcriptEl.scrollTop = transcriptEl.scrollHeight;
 }
 
@@ -380,6 +472,7 @@ async function sendAudioToAgent(audioBlob) {
     addTranscript("agent", payload.reply, meta);
     providerEl.textContent = `Provider: ${payload.provider} | ${payload.model} | ${ttsMeta}`;
     languageEl.textContent = payload.language === "es" ? "Spanish" : "English";
+    setPipelineMode(payload.pipeline);
     renderSources(payload.sources);
     renderTrace(payload.trace);
     agentBusy = false;
@@ -406,6 +499,14 @@ function vadLoop() {
   const rawLevel = audioLevel();
   smoothedLevel = (smoothedLevel * 0.72) + (rawLevel * 0.28);
   const limit = thresholds();
+
+  // Feed the already-EMA-smoothed level to the orb so "listening" scales with the
+  // caller's voice. Only written while actually listening (the sole state that
+  // consumes --level), avoiding a per-frame DOM write the rest of the time.
+  if (voiceOrb && voiceOrb.dataset.voiceState === "listening") {
+    voiceOrb.style.setProperty(
+      "--level", Math.min(1, smoothedLevel / (limit.start || 0.02)).toFixed(3));
+  }
 
   if (!recorder && !agentSpeaking && !agentBusy && smoothedLevel < limit.start) {
     noiseFloor = (noiseFloor * 0.985) + (rawLevel * 0.015);
@@ -563,6 +664,7 @@ async function startCall() {
       ? `TTS: ${greeting.ttsVoice || greeting.ttsModel}`
       : "Browser TTS";
     providerEl.textContent = `Provider: ${greeting.provider} | ${greeting.model} | ${ttsMeta}`;
+    setPipelineMode(greeting.pipeline);
     renderTrace(greeting.trace);
     agentBusy = false;
     speak(

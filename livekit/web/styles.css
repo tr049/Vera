@@ -1,13 +1,169 @@
+/* ============================================================================
+   Vera Voice Operations — design system
+   Warm-cool voice duality: teal = agent/speaking, amber = caller/listening.
+   Pure CSS + WAAPI, no dependencies. Light + dark, WCAG AA, reduced-motion aware.
+   Every existing hook (.speaking/.connected/.complete/.bubble/#ids/data-*) is
+   preserved — only the colours + motion they resolve to changed.
+   ============================================================================ */
+
 :root {
   color-scheme: light;
-  --ink: #17202b;
-  --muted: #667184;
-  --line: #d9dee7;
+
+  /* surfaces (elevate-by-shadow in light) */
+  --bg: #eef1f6;
   --surface: #ffffff;
-  --canvas: #f3f5f7;
-  --blue: #2458c6;
-  --green: #16805a;
-  --red: #b23a3a;
+  --surface-2: #f5f7fb;
+  --elevated: #ffffff;
+  --console: #0e141b;
+  --console-ink: #d7e0eb;
+
+  /* text */
+  --ink: #10151c;
+  --muted: #5a6474;
+  --subtle: #5c6573; /* darkened so 11px eyebrows clear 4.5:1 on the light header/bg */
+
+  /* borders */
+  --line: #dde2ea;
+  --line-strong: #c4ccd7;
+
+  /* agent = brand = speaking (cool teal) */
+  --agent: #0f766e;
+  --agent-solid: #14b8a6;
+  --agent-tint: #e6f5f2;
+  --on-agent: #ffffff;
+
+  /* caller = listening (warm amber) — never white text on the fill */
+  --caller: #a65f12;
+  --caller-solid: #d98a2e;
+  --caller-tint: #fbefdd;
+  --on-caller: #3a2a08;
+
+  /* status */
+  --success: #0e7247;
+  --success-solid: #15925e;
+  --success-tint: #e7f6ee;
+  --warning: #b45309;
+  --warning-solid: #d97706;
+  --warning-tint: #fdf1e3;
+  --danger: #b0212e;
+  --danger-solid: #c42d3a;
+  --danger-tint: #fcedee;
+  --on-danger: #ffffff;
+
+  /* depth */
+  --shadow-sm: 0 1px 2px rgba(16, 21, 28, 0.06), 0 1px 1px rgba(16, 21, 28, 0.04);
+  --shadow-md: 0 4px 14px -3px rgba(16, 21, 28, 0.1), 0 2px 6px -2px rgba(16, 21, 28, 0.06);
+  --shadow-lg: 0 18px 44px -12px rgba(16, 21, 28, 0.2);
+  --ring: 0 0 0 3px rgba(15, 118, 110, 0.32);
+  --glow-agent: 0 0 60px -8px rgba(20, 184, 166, 0.45);
+  --glow-caller: 0 0 60px -8px rgba(217, 138, 46, 0.42);
+  --glow-danger: 0 0 46px -6px rgba(196, 45, 58, 0.45);
+
+  /* geometry */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 28px;
+  --r-pill: 999px;
+
+  /* hero gradients */
+  --grad-agent: linear-gradient(135deg, #14b8a6 0%, #0ea5e9 52%, #6366f1 100%);
+  --grad-caller: linear-gradient(135deg, #f6c560 0%, #e0742f 100%);
+  --grad-danger: linear-gradient(135deg, #f26d78 0%, #c42d3a 100%);
+  --grad-mesh:
+    radial-gradient(120% 120% at 15% 10%, rgba(20, 184, 166, 0.14), transparent 55%),
+    radial-gradient(120% 120% at 85% 90%, rgba(99, 102, 241, 0.12), transparent 55%);
+
+  /* motion (Material-3 derived) */
+  --dur-instant: 80ms;
+  --dur-fast: 150ms;
+  --dur-base: 240ms;
+  --dur-slow: 400ms;
+  --dur-breath: 4000ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --ease-sine: cubic-bezier(0.37, 0, 0.63, 1);
+}
+
+/* Dark tokens — elevate by luminance, off-white ink, brighter/desaturated
+   accents, dark ink on bright fills. Applied both via system preference and the
+   explicit [data-theme] toggle so the toggle always wins in both directions. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0b0f14;
+    --surface: #121821;
+    --surface-2: #1a222d;
+    --elevated: #212b38;
+    --console: #0a0e13;
+    --console-ink: #c6d2e2;
+    --ink: #e7ecf3;
+    --muted: #9aa6b5;
+    --subtle: #8b96a6;
+    --line: #263041;
+    --line-strong: #35414f;
+    --agent: #2dd4bf;
+    --agent-solid: #2dd4bf;
+    --agent-tint: #0f1f1d;
+    --on-agent: #062e29;
+    --caller: #f5b84e;
+    --caller-solid: #f5b84e;
+    --caller-tint: #241b09;
+    --on-caller: #241804;
+    --success: #34d399;
+    --success-solid: #34d399;
+    --success-tint: #0e2019;
+    --warning: #fbbf24;
+    --warning-solid: #fbbf24;
+    --warning-tint: #251c08;
+    --danger: #f26d78;
+    --danger-solid: #f26d78;
+    --danger-tint: #2a1417;
+    --on-danger: #2a0a0d;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 8px 28px -6px rgba(0, 0, 0, 0.55);
+    --shadow-lg: 0 24px 60px -16px rgba(0, 0, 0, 0.7);
+    --ring: 0 0 0 3px rgba(45, 212, 191, 0.4);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0f14;
+  --surface: #121821;
+  --surface-2: #1a222d;
+  --elevated: #212b38;
+  --console: #0a0e13;
+  --console-ink: #c6d2e2;
+  --ink: #e7ecf3;
+  --muted: #9aa6b5;
+  --subtle: #8b96a6;
+  --line: #263041;
+  --line-strong: #35414f;
+  --agent: #2dd4bf;
+  --agent-solid: #2dd4bf;
+  --agent-tint: #0f1f1d;
+  --on-agent: #062e29;
+  --caller: #f5b84e;
+  --caller-solid: #f5b84e;
+  --caller-tint: #241b09;
+  --on-caller: #241804;
+  --success: #34d399;
+  --success-solid: #34d399;
+  --success-tint: #0e2019;
+  --warning: #fbbf24;
+  --warning-solid: #fbbf24;
+  --warning-tint: #251c08;
+  --danger: #f26d78;
+  --danger-solid: #f26d78;
+  --danger-tint: #2a1417;
+  --on-danger: #2a0a0d;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 8px 28px -6px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 24px 60px -16px rgba(0, 0, 0, 0.7);
+  --ring: 0 0 0 3px rgba(45, 212, 191, 0.4);
 }
 
 * {
@@ -17,25 +173,53 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--canvas);
+  background:
+    var(--grad-mesh),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--ink);
-  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  font-family: Inter, "Segoe UI", system-ui, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color var(--dur-slow) var(--ease-standard),
+    color var(--dur-slow) var(--ease-standard);
 }
 
 main {
   width: min(1240px, calc(100vw - 32px));
-  margin: 24px auto 48px;
+  margin: 24px auto 56px;
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
 
+/* -------------------------------------------------------------- header ---- */
 .header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  padding: 10px 2px 14px;
-  border-bottom: 1px solid var(--line);
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface); /* opaque base for browsers without backdrop-filter */
+  box-shadow: var(--shadow-sm);
+}
+
+/* only go translucent-glass where the blur is actually supported */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .header {
+    background: color-mix(in srgb, var(--surface) 80%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+}
+
+/* the long provider pill wraps instead of forcing horizontal page overflow */
+#provider {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .header-state,
@@ -43,15 +227,16 @@ main {
 .participants {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 
 .eyebrow {
   margin: 0 0 5px;
-  color: var(--muted);
+  color: var(--subtle);
   font-size: 11px;
   font-weight: 750;
-  letter-spacing: 0;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
@@ -63,16 +248,31 @@ p {
 
 h1 {
   margin-bottom: 0;
-  font-size: 34px;
-  line-height: 1.08;
-  letter-spacing: 0;
+  font-size: 30px;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--agent); /* solid fallback if background-clip:text is unsupported */
+  /* deep stops so every letter clears the 3:1 large-text floor on the light header */
+  background: linear-gradient(135deg, #0d9488, #0369a1 52%, #4338ca);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+@supports (-webkit-background-clip: text) or (background-clip: text) {
+  h1 { color: transparent; }
+}
+
+/* dark header is dark enough for the brighter signature gradient */
+:root[data-theme="dark"] h1 { background-image: var(--grad-agent); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) h1 { background-image: var(--grad-agent); }
 }
 
 h2 {
   margin-bottom: 0;
-  font-size: 19px;
+  font-size: 18px;
   line-height: 1.2;
-  letter-spacing: 0;
+  letter-spacing: -0.01em;
 }
 
 .status-pill,
@@ -80,39 +280,111 @@ h2 {
 .listening-state {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   min-height: 32px;
-  border: 1px solid #c7ced9;
-  border-radius: 999px;
-  padding: 0 11px;
-  background: var(--surface);
-  color: #465164;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 0 12px;
+  background: var(--surface-2);
+  color: var(--muted);
   font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
+  transition: color var(--dur-base) var(--ease-standard),
+    background-color var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard);
 }
 
+/* theme toggle */
+.theme-toggle {
+  min-height: 32px;
+  min-width: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard);
+}
+
+.theme-toggle:hover {
+  transform: translateY(-1px);
+  background: var(--agent-tint);
+}
+
+/* pipeline-mode badge: batch = amber steady dot, streaming = teal pulsing dot */
+.pipeline-mode {
+  gap: 7px;
+  font-weight: 700;
+}
+
+.pipeline-mode .mode-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--caller-solid);
+  flex: none;
+}
+
+.pipeline-mode[data-mode="streaming"] {
+  color: var(--agent);
+  border-color: color-mix(in srgb, var(--agent-solid) 45%, var(--line));
+  background: var(--agent-tint);
+}
+
+.pipeline-mode[data-mode="streaming"] .mode-dot {
+  background: var(--agent-solid);
+  animation: modePulse 1.4s var(--ease-sine) infinite;
+}
+
+@keyframes modePulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--agent-solid) 65%, transparent); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+}
+
+/* --------------------------------------------------------------- stage ---- */
 .stage {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 18px;
 }
 
 .participant-card {
-  min-height: 238px;
+  position: relative;
+  min-height: 300px;
   display: grid;
-  align-content: space-between;
-  gap: 22px;
+  align-content: start;
+  gap: 18px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 20px;
+  border-radius: var(--r-lg);
+  padding: 22px;
   background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: border-color var(--dur-slow) var(--ease-standard),
+    box-shadow var(--dur-slow) var(--ease-standard);
 }
 
 .participant-card.connected {
-  border-color: #7ca891;
+  border-color: color-mix(in srgb, var(--caller-solid) 55%, var(--line));
 }
 
 .participant-card.agent.connected {
-  border-color: #91a8dc;
+  border-color: color-mix(in srgb, var(--agent-solid) 55%, var(--line));
+}
+
+.participant-card.speaking {
+  box-shadow: var(--shadow-md);
+}
+
+/* the caller card has less content than the orb-bearing agent card; distribute it
+   so the controls anchor to the bottom instead of leaving a void. */
+.participant-card[data-client="caller"] {
+  align-content: space-between;
 }
 
 .card-top,
@@ -124,35 +396,217 @@ h2 {
   gap: 12px;
 }
 
+/* ---------------------------------------------------------- voice orb ---- */
+.voice-orb {
+  --orb: var(--agent-solid);
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 190px;
+  margin: 4px 0;
+}
+
+.orb-core,
+.orb-glow,
+.orb-ring {
+  position: absolute;
+  border-radius: 50%;
+}
+
+/* only hint the layers that animate continuously; the rings animate only in
+   listening/speaking states, so a permanent will-change there just wastes memory. */
+.orb-core,
+.orb-glow {
+  will-change: transform, opacity;
+}
+
+.orb-core {
+  width: 128px;
+  height: 128px;
+  background: var(--grad-agent);
+  box-shadow: inset 0 0 30px rgba(255, 255, 255, 0.25);
+  animation: orbBreath var(--dur-breath) var(--ease-sine) infinite;
+}
+
+.orb-core::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent, rgba(255, 255, 255, 0.7) 22%, transparent 46%);
+  opacity: 0;
+  transition: opacity var(--dur-base) var(--ease-standard);
+}
+
+.orb-glow {
+  width: 150px;
+  height: 150px;
+  background: var(--orb);
+  filter: blur(30px);
+  opacity: 0.4;
+  animation: glowPulse 5s var(--ease-sine) infinite;
+}
+
+.orb-ring {
+  width: 128px;
+  height: 128px;
+  border: 2px solid color-mix(in srgb, var(--orb) 65%, transparent);
+  opacity: 0;
+}
+
+.orb-ring.r2 {
+  animation-delay: 0.5s;
+}
+
+.orb-ring.r3 {
+  animation-delay: 1s;
+}
+
+/* orb — idle */
+.voice-orb[data-voice-state="idle"] .orb-core,
+.voice-orb[data-voice-state="muted"] .orb-core {
+  filter: saturate(0.55) brightness(0.92);
+}
+.voice-orb[data-voice-state="muted"] {
+  opacity: 0.4;
+}
+
+/* orb — listening (caller): audio-reactive core + amber ripples */
+.voice-orb[data-voice-state="listening"] {
+  --orb: var(--caller-solid);
+}
+.voice-orb[data-voice-state="listening"] .orb-core {
+  background: var(--grad-caller);
+  transform: scale(calc(1 + var(--level, 0) * 0.2));
+  transition: transform 90ms linear;
+  animation: none;
+}
+.voice-orb[data-voice-state="listening"] .orb-glow {
+  animation: none; /* let the audio-reactive opacity below win over glowPulse */
+  opacity: calc(0.35 + var(--level, 0) * 0.4);
+}
+.voice-orb[data-voice-state="listening"] .orb-ring {
+  animation: ripple 1.6s var(--ease-decelerate) infinite;
+}
+
+/* orb — thinking: conic sweep rotation */
+.voice-orb[data-voice-state="thinking"] .orb-core {
+  animation: orbSpin 1.2s linear infinite;
+}
+.voice-orb[data-voice-state="thinking"] .orb-core::after {
+  opacity: 1;
+}
+
+/* orb — speaking (agent): pulse + teal emission */
+.voice-orb[data-voice-state="speaking"] .orb-core {
+  animation: speakPulse 0.6s var(--ease-sine) infinite;
+}
+.voice-orb[data-voice-state="speaking"] .orb-glow {
+  animation: none; /* let the bloom below win over glowPulse */
+  opacity: 0.72;
+  box-shadow: var(--glow-agent);
+}
+.voice-orb[data-voice-state="speaking"] .orb-ring {
+  animation: emit 2.2s var(--ease-decelerate) infinite;
+}
+
+/* orb — barge-in: snap inward, amber flash */
+.voice-orb[data-voice-state="bargein"] {
+  --orb: var(--warning-solid);
+}
+.voice-orb[data-voice-state="bargein"] .orb-core {
+  background: var(--grad-caller);
+  animation: snapCore 0.3s var(--ease-accelerate);
+}
+.voice-orb[data-voice-state="bargein"] .orb-ring {
+  animation: snapIn 0.28s var(--ease-accelerate);
+}
+
+/* orb — error */
+.voice-orb[data-voice-state="error"] {
+  --orb: var(--danger-solid);
+}
+.voice-orb[data-voice-state="error"] .orb-core {
+  background: var(--grad-danger);
+  animation: errorPulse 0.4s var(--ease-standard);
+}
+
+@keyframes orbBreath {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.045); }
+}
+@keyframes speakPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+@keyframes orbSpin {
+  to { transform: rotate(360deg); }
+}
+@keyframes glowPulse {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(1.1); }
+}
+@keyframes ripple {
+  from { transform: scale(0.9); opacity: 0.5; }
+  to { transform: scale(1.75); opacity: 0; }
+}
+@keyframes emit {
+  from { transform: scale(1); opacity: 0.5; }
+  to { transform: scale(1.9); opacity: 0; }
+}
+@keyframes snapIn {
+  from { transform: scale(1.6); opacity: 0.5; }
+  to { transform: scale(1); opacity: 0; }
+}
+@keyframes snapCore {
+  0% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+@keyframes errorPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+/* ------------------------------------------------------------ waveform ---- */
 .waveform {
-  height: 78px;
+  height: 60px;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  border: 1px solid #e2e6ec;
-  border-radius: 6px;
-  background: #f8f9fb;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
 }
 
 .waveform span {
-  width: 8px;
-  height: 22px;
-  border-radius: 4px;
-  background: #aeb7c4;
+  width: 6px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  background: var(--line-strong);
   transform-origin: center;
+  transition: background-color var(--dur-base) var(--ease-standard);
 }
 
 .participant-card.speaking .waveform span {
-  animation: pulse 0.72s ease-in-out infinite;
+  animation: pulse 0.72s var(--ease-sine) infinite;
 }
 
 .caller-wave span {
-  background: var(--green);
+  background: color-mix(in srgb, var(--caller-solid) 70%, var(--line-strong));
+}
+
+.participant-card.caller.speaking .caller-wave span {
+  background: var(--caller-solid);
 }
 
 .agent-wave span {
-  background: var(--blue);
+  background: color-mix(in srgb, var(--agent-solid) 70%, var(--line-strong));
+}
+
+.participant-card.agent.speaking .agent-wave span {
+  background: var(--agent-solid);
 }
 
 .waveform span:nth-child(2) { animation-delay: 0.08s; }
@@ -161,149 +615,206 @@ h2 {
 .waveform span:nth-child(5) { animation-delay: 0.32s; }
 
 @keyframes pulse {
-  0%, 100% { transform: scaleY(0.55); }
-  50% { transform: scaleY(2.2); }
+  0%, 100% { transform: scaleY(0.6); opacity: 0.8; }
+  50% { transform: scaleY(1.9); opacity: 1; }
 }
 
+/* ------------------------------------------------------------- buttons ---- */
 button {
-  min-height: 40px;
-  border: 1px solid var(--blue);
-  border-radius: 6px;
-  padding: 0 15px;
-  background: var(--blue);
-  color: #ffffff;
+  min-height: 42px;
+  border: 1px solid var(--agent);
+  border-radius: var(--r-sm);
+  padding: 0 16px;
+  background: var(--agent);
+  color: var(--on-agent);
   cursor: pointer;
   font: inherit;
   font-weight: 700;
+  transition: transform var(--dur-fast) var(--ease-standard),
+    box-shadow var(--dur-fast) var(--ease-standard),
+    filter var(--dur-fast) var(--ease-standard),
+    background-color var(--dur-fast) var(--ease-standard);
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow: var(--shadow-md);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0) scale(0.98);
+  transition-duration: var(--dur-instant);
 }
 
 button.secondary {
-  border-color: #aeb7c4;
-  background: #ffffff;
-  color: #354052;
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
 }
 
 button.danger {
-  border-color: #d3b2b2;
-  background: #ffffff;
-  color: var(--red);
+  border-color: color-mix(in srgb, var(--danger-solid) 45%, var(--line));
+  background: var(--surface);
+  color: var(--danger);
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--danger-tint);
 }
 
 button:disabled {
-  border-color: #d7dce4;
-  background: #e7eaf0;
-  color: #7a8493;
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--subtle);
   cursor: not-allowed;
+}
+
+:focus-visible {
+  /* --agent (deep teal in light, bright in dark) clears the 3:1 non-text floor
+     in both themes, unlike the lighter --agent-solid. */
+  outline: 2px solid var(--agent);
+  outline-offset: 2px;
 }
 
 .voice-status {
   min-height: 40px;
   display: flex;
   align-items: center;
-  border-top: 1px solid #e2e6ec;
-  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
   color: var(--muted);
-  font-weight: 650;
+  font-weight: 600;
 }
 
+/* ----------------------------------------------------------- workspace ---- */
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(360px, 0.8fr);
-  gap: 16px;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
   background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
 }
 
 .conversation-column,
 .operations-column {
   min-width: 0;
-  padding: 20px;
+  padding: 22px;
 }
 
 .operations-column {
   border-left: 1px solid var(--line);
+  background: var(--surface-2);
 }
 
 .transcript {
-  min-height: 310px;
-  max-height: 430px;
+  min-height: 320px;
+  max-height: 440px;
   overflow: auto;
   display: grid;
   align-content: start;
-  gap: 10px;
+  gap: 12px;
   margin-top: 16px;
-  padding: 14px;
-  border: 1px solid #e2e6ec;
-  border-radius: 6px;
-  background: #f8f9fb;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
 }
 
 .bubble {
-  width: min(80%, 660px);
-  border: 1px solid #d9dee7;
-  border-radius: 8px;
-  padding: 11px 13px;
-  background: #ffffff;
+  width: min(82%, 660px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  background: var(--surface);
   line-height: 1.45;
+  box-shadow: var(--shadow-sm);
+  /* entrance handled by Motion (spring) in talk.js; @keyframes bubbleIn below is
+     kept for the events log. Reduced-motion: Motion is skipped, bubble is static. */
 }
 
 .bubble.caller {
   justify-self: start;
-  border-color: #b8d8c8;
+  border-color: color-mix(in srgb, var(--caller-solid) 55%, var(--line));
+  border-left: 3px solid var(--caller-solid);
 }
 
 .bubble.agent {
   justify-self: end;
-  border-color: #bdccec;
+  border-color: color-mix(in srgb, var(--agent-solid) 55%, var(--line));
+  border-right: 3px solid var(--agent-solid);
 }
 
 .bubble.interruption {
   width: auto;
   justify-self: center;
   border-style: dashed;
-  color: var(--red);
+  border-color: var(--danger);
+  color: var(--danger);
+  background: var(--danger-tint);
   font-size: 13px;
+  font-weight: 600;
+}
+
+/* kept for the events log (.event-row); transcript bubbles animate via Motion */
+@keyframes bubbleIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
 }
 
 .bubble-label {
-  margin-bottom: 4px;
-  color: var(--muted);
+  margin-bottom: 5px;
+  color: var(--subtle);
   font-size: 11px;
   font-weight: 750;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .empty {
-  color: var(--muted);
+  color: var(--subtle);
   font-size: 14px;
 }
 
 .sources-block {
-  margin-top: 14px;
-  padding-top: 13px;
-  border-top: 1px solid #e2e6ec;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
 }
 
 .sources {
-  color: #465164;
+  color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
 }
 
+/* ------------------------------------------------------------- metrics ---- */
 .metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
+  gap: 8px;
   margin-top: 16px;
 }
 
 .metrics div {
   min-width: 0;
-  border: 1px solid #e0e4eb;
-  border-radius: 6px;
-  padding: 9px;
-  background: #f8f9fb;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 10px;
+  background: var(--surface);
+  transition: border-color var(--dur-base) var(--ease-standard);
+}
+
+.metrics div.bump {
+  animation: metricBump var(--dur-slow) var(--ease-decelerate);
+}
+
+@keyframes metricBump {
+  0% { border-color: var(--agent-solid); background: var(--agent-tint); }
+  100% { border-color: var(--line); background: var(--surface); }
 }
 
 .metrics span,
@@ -312,41 +823,62 @@ button:disabled {
 }
 
 .metrics span {
-  color: var(--muted);
+  color: var(--subtle);
   font-size: 10px;
   font-weight: 750;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
 .metrics strong {
-  margin-top: 4px;
-  font-size: 15px;
+  margin-top: 5px;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
 }
 
+/* ------------------------------------------------------------ pipeline ---- */
 .pipeline {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
-  margin-top: 14px;
+  margin-top: 16px;
 }
 
 .pipeline span {
-  min-height: 30px;
+  position: relative;
+  min-height: 32px;
   display: grid;
   place-items: center;
-  border: 1px solid #dce1e8;
-  border-radius: 5px;
-  color: #737d8d;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--surface);
+  color: var(--subtle);
   font-size: 11px;
   font-weight: 750;
+  transition: color var(--dur-base) var(--ease-standard),
+    background-color var(--dur-base) var(--ease-standard),
+    border-color var(--dur-base) var(--ease-standard);
 }
 
 .pipeline span.complete {
-  border-color: #96c1aa;
-  background: #edf7f2;
-  color: #176847;
+  border-color: color-mix(in srgb, var(--success-solid) 45%, transparent);
+  background: var(--success-tint);
+  color: var(--success);
+  animation: stagePop var(--dur-base) var(--ease-decelerate);
 }
 
+.pipeline span.complete::after {
+  content: " \2713";
+  font-size: 10px;
+}
+
+@keyframes stagePop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.07); }
+  100% { transform: scale(1); }
+}
+
+/* -------------------------------------------------------------- events ---- */
 .events {
   min-height: 150px;
   max-height: 210px;
@@ -354,31 +886,33 @@ button:disabled {
   display: grid;
   align-content: start;
   gap: 6px;
-  margin-top: 12px;
-  padding: 10px;
-  border: 1px solid #e0e4eb;
-  border-radius: 6px;
-  background: #111821;
-  color: #d7e0eb;
-  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--console);
+  color: var(--console-ink);
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .event-row {
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr);
   gap: 8px;
+  animation: bubbleIn var(--dur-fast) var(--ease-decelerate) both;
 }
 
 .event-row time {
-  color: #85a8e8;
+  color: #7fd8cb;
 }
 
+/* -------------------------------------------------------------- tuning ---- */
 .tuning {
   display: grid;
   gap: 12px;
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid #e0e4eb;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
 }
 
 .tuning-heading span,
@@ -389,30 +923,35 @@ button:disabled {
 
 .tuning label {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 input[type="range"] {
   width: 100%;
-  accent-color: var(--blue);
+  accent-color: var(--agent); /* darker teal clears 3:1 on the light track */
 }
 
+/* ----------------------------------------------------------- room band ---- */
 .room-band {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
   align-items: center;
   gap: 20px;
-  padding: 14px 2px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
 
 .participant {
   display: flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid #d9dee7;
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 8px 12px;
+  background: var(--surface-2);
   font-size: 13px;
 }
 
@@ -420,10 +959,11 @@ input[type="range"] {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--green);
+  background: var(--success-solid);
   content: "";
 }
 
+/* --------------------------------------------------------- responsive ---- */
 @media (max-width: 900px) {
   .workspace {
     grid-template-columns: 1fr;
@@ -455,8 +995,22 @@ input[type="range"] {
     flex-direction: column;
   }
 
+  /* a stacked sticky header would eat too much of a phone viewport */
+  .header {
+    position: static;
+  }
+
   .stage {
     grid-template-columns: 1fr;
+  }
+
+  .voice-orb {
+    height: 150px;
+  }
+  .orb-core,
+  .orb-ring {
+    width: 104px;
+    height: 104px;
   }
 
   .metrics {
@@ -465,5 +1019,30 @@ input[type="range"] {
 
   .bubble {
     width: 100%;
+  }
+}
+
+/* ------------------------------------------------- reduced motion (a11y) ---
+   Kill looping/transform motion but keep state legible via colour + a static
+   scale cue on the orb, per WCAG (opacity/colour changes are not "motion"). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: var(--dur-fast) !important;
+    scroll-behavior: auto !important;
+  }
+
+  .voice-orb .orb-core {
+    animation: none !important;
+  }
+  .voice-orb[data-voice-state="listening"] .orb-core,
+  .voice-orb[data-voice-state="speaking"] .orb-core {
+    transform: scale(1.05);
+  }
+  .voice-orb .orb-ring {
+    display: none;
   }
 }

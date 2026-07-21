@@ -4,6 +4,35 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Vera Voice Operations</title>
+    <script>
+      /* Theme: honour the saved choice before first paint (no FOUC); the OS
+         preference drives it until the user overrides. Fully isolated from talk.js. */
+      (function () {
+        var KEY = "vera-theme";
+        try {
+          var t = localStorage.getItem(KEY);
+          if (t === "dark" || t === "light") document.documentElement.dataset.theme = t;
+        } catch (e) {}
+        function current() {
+          return (
+            document.documentElement.dataset.theme ||
+            (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+          );
+        }
+        window.addEventListener("DOMContentLoaded", function () {
+          var btn = document.getElementById("theme-toggle");
+          if (!btn) return;
+          var sync = function () { btn.textContent = current() === "dark" ? "☀️" : "\u{1F319}"; };
+          sync();
+          btn.addEventListener("click", function () {
+            var next = current() === "dark" ? "light" : "dark";
+            document.documentElement.dataset.theme = next;
+            try { localStorage.setItem(KEY, next); } catch (e) {}
+            sync();
+          });
+        });
+      })();
+    </script>
     <link rel="stylesheet" href="/web/styles.css" />
   </head>
   <body>
@@ -14,9 +43,15 @@
           <h1>Vera Voice Operations</h1>
         </div>
         <div class="header-state">
+          <span class="status-pill pipeline-mode" id="pipeline-mode" data-mode="batch"
+                title="Response pipeline. Batch = one full reply per turn (current browser path). Streaming = sentence-by-sentence, lower time-to-first-audio (CLI voice_loop with STREAMING=on).">
+            <span class="mode-dot"></span><span id="pipeline-mode-label">Batch cascade</span>
+          </span>
           <span class="status-pill" id="language">English</span>
           <span class="status-pill" id="provider">Provider: loading</span>
           <span class="status-pill">vera-demo-room</span>
+          <button id="theme-toggle" class="theme-toggle" type="button"
+                  aria-label="Toggle dark mode" title="Toggle theme">🌙</button>
         </div>
       </header>
 
@@ -47,6 +82,13 @@
             </div>
             <span class="state" data-role="status">Waiting</span>
           </div>
+          <div class="voice-orb" data-voice-state="idle" aria-hidden="true">
+            <span class="orb-glow"></span>
+            <span class="orb-ring r1"></span>
+            <span class="orb-ring r2"></span>
+            <span class="orb-ring r3"></span>
+            <span class="orb-core"></span>
+          </div>
           <div class="waveform agent-wave" aria-hidden="true">
             <span></span><span></span><span></span><span></span><span></span>
           </div>
@@ -61,9 +103,9 @@
               <p class="eyebrow">Conversation</p>
               <h2>Live transcript</h2>
             </div>
-            <span class="listening-state" id="listening-state">Idle</span>
+            <span class="listening-state" id="listening-state" role="status" aria-live="polite">Idle</span>
           </div>
-          <div id="transcript" class="transcript" aria-live="polite">
+          <div id="transcript" class="transcript" role="log" aria-live="polite">
             <div class="empty">The call transcript will appear here.</div>
           </div>
           <div class="sources-block">
@@ -79,7 +121,7 @@
               <h2>Runtime trace</h2>
             </div>
           </div>
-          <div class="metrics" aria-label="Turn latency metrics">
+          <div class="metrics" aria-label="Turn latency metrics" aria-hidden="true">
             <div><span>STT</span><strong id="metric-stt">0 ms</strong></div>
             <div><span>LLM</span><strong id="metric-llm">0 ms</strong></div>
             <div><span>Tools</span><strong id="metric-tools">0 ms</strong></div>
@@ -87,7 +129,7 @@
             <div><span>EOT to audio</span><strong id="metric-first-audio">0 ms</strong></div>
             <div><span>Barge-in</span><strong id="metric-barge">0 ms</strong></div>
           </div>
-          <div id="pipeline" class="pipeline" aria-label="Voice pipeline">
+          <div id="pipeline" class="pipeline" aria-label="Voice pipeline" aria-hidden="true">
             <span data-stage="vad">VAD</span>
             <span data-stage="stt">STT</span>
             <span data-stage="routing">Router</span>
@@ -96,7 +138,7 @@
             <span data-stage="tools">Tools</span>
             <span data-stage="tts">TTS</span>
           </div>
-          <div id="events" class="events">
+          <div id="events" class="events" aria-hidden="true">
             <div class="empty">Turn events will appear here.</div>
           </div>
           <div class="tuning">

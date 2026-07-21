@@ -190,5 +190,287 @@ class VoiceAgentReplyTests(unittest.TestCase):
         self.assertEqual(payload.get("ignoreReason"), "noise_or_hallucination")
 
 
+class StreamingVoiceAgentTests(unittest.TestCase):
+    """The NDJSON streaming twin (_stream_voice_agent_reply) via the emit seam:
+    no HTTP, no sockets -- events are captured in a list; a scripted fake agent
+    drives on_delta/on_reset exactly as agent.respond would."""
+
+    def _session(self, provider, deltas, *, resets_before=None, reply="", action=None):
+        """Install a fake session whose respond() streams `deltas` (with an
+        optional on_reset before delta index N) and returns (reply, action)."""
+        import threading
+
+        import talk_server
+
+        class FakeSessionAgent:
+            def __init__(self):
+                self.provider = provider
+                self.last_sources = []
+                self.current_language = "en"
+                self.current_locale = "en-US"
+
+            def respond(self, text, trace=None, on_delta=None, on_reset=None):
+                for i, delta in enumerate(deltas):
+                    if resets_before and i in resets_before and on_reset:
+                        on_reset()
+                    if on_delta:
+                        on_delta(delta)
+                return reply, action
+
+        session = f"test-stream-{id(provider)}"
+        talk_server._agent_sessions[session] = FakeSessionAgent()
+        talk_server._session_locks[session] = threading.Lock()
+        return session
+
+    def _run(self, session, emit=None):
+        from talk_server import _reset_session, _stream_voice_agent_reply
+
+        events = []
+        collect = emit or (lambda event: (events.append(event), True)[1])
+        try:
+            final = _stream_voice_agent_reply(
+                b"audio", "audio/webm", session, "turn-1", False, emit=collect,
+            )
+        finally:
+            _reset_session(session)
+        return events, final
+
+    class _StreamProvider:
+        name = "openai+dg-tts"
+        llm_model = "llm"
+        stt_model = "stt-model"
+        tts_backend = "provider"
+        tts_model = "aura-2-luna-en"
+        tts_voice = "aura-2-luna-en"
+
+        def __init__(self, fail_on=()):
+            self.fail_on = set(fail_on)
+            self.synth_calls = 0
+
+        def transcribe_media(self, audio, content_type=""):
+            return "I need a room for two"
+
+        def synthesize(self, text, language=None):
+            self.synth_calls += 1
+            if self.synth_calls in self.fail_on:
+                raise RuntimeError("tts vendor error")
+            return b"RIFFwav" + str(self.synth_calls).encode()
+
+        def voice_for(self, language=None):
+            return "aura-2-luna-en"
+
+    def test_happy_path_streams_sentences_then_final(self):
+        import base64 as b64
+
+        provider = self._StreamProvider()
+        session = self._session(
+            provider, ["Sure. ", "We have a king. "],
+            reply="Sure. We have a king.",
+        )
+        events, final = self._run(session)
+
+        kinds = [event["type"] for event in events]
+        self.assertEqual(kinds, ["transcript", "sentence", "sentence", "final"])
+        self.assertEqual(events[1]["text"], "Sure.")
+        self.assertTrue(b64.b64decode(events[1]["audioBase64"]).startswith(b"RIFF"))
+        self.assertEqual(final["pipeline"], "streaming")   # audio actually streamed
+        self.assertEqual(final["reply"], "Sure. We have a king.")
+        self.assertIn("trace", final)
+        self.assertEqual(final["sentences"], 2)
+
+    def test_single_sentence_tts_failure_does_not_degrade_turn(self):
+        provider = self._StreamProvider(fail_on={2})
+        session = self._session(
+            provider, ["One. ", "Two. "], reply="One. Two.",
+        )
+        events, final = self._run(session)
+        sentences = [event for event in events if event["type"] == "sentence"]
+        self.assertTrue(sentences[0]["audioBase64"])       # first synthesized
+        self.assertEqual(sentences[1]["audioBase64"], "")  # failed -> empty, no raise
+        self.assertEqual(final["pipeline"], "streaming")   # one chunk still streamed
+        self.assertNotEqual(final.get("action"), "transfer")  # NOT degraded
+
+    def test_all_tts_failures_fall_back_to_browser_voice(self):
+        provider = self._StreamProvider(fail_on={1, 2})
+        session = self._session(provider, ["One. ", "Two. "], reply="One. Two.")
+        events, final = self._run(session)
+        self.assertTrue(all(
+            event["audioBase64"] == "" for event in events if event["type"] == "sentence"
+        ))
+        self.assertTrue(final["ttsFallback"])
+        self.assertEqual(final["ttsBackend"], "browser")
+        self.assertEqual(final["pipeline"], "batch")       # honest badge: nothing streamed
+
+    def test_client_gone_skips_tts_but_completes_turn(self):
+        provider = self._StreamProvider()
+        session = self._session(
+            provider, ["One. ", "Two. ", "Three. "], reply="One. Two. Three.",
+        )
+        emitted = []
+
+        def dying_emit(event):
+            emitted.append(event)
+            return len(emitted) < 3  # client disappears after the 2nd event
+
+        events, final = self._run(session, emit=dying_emit)
+        self.assertEqual(provider.synth_calls, 2)  # TTS stopped after client left
+        self.assertEqual(final["reply"], "One. Two. Three.")  # turn still completed
+
+    def test_reset_drops_preamble_segment_and_degrade_reply_is_sent(self):
+        provider = self._StreamProvider()
+        session = self._session(
+            provider, ["One moment. ", "Booked! "],
+            resets_before={1},                      # tool boundary after the preamble
+            reply="Booked!",
+        )
+        events, _final = self._run(session)
+        kinds = [event["type"] for event in events]
+        self.assertIn("reset", kinds)
+        reset_event = next(event for event in events if event["type"] == "reset")
+        self.assertEqual(reset_event["segment"], 1)
+        post_reset = [event for event in events
+                      if event["type"] == "sentence" and event["segment"] == 1]
+        self.assertEqual(post_reset[0]["text"], "Booked!")
+
+        # Degrade guarantee: a respond() that streams NOTHING still sends the reply.
+        quiet = self._StreamProvider()
+        session2 = self._session(quiet, [], reply="Let me transfer you.", action="transfer")
+        events2, final2 = self._run(session2)
+        sentences2 = [event for event in events2 if event["type"] == "sentence"]
+        self.assertEqual(sentences2[0]["text"], "Let me transfer you.")
+        self.assertEqual(final2["action"], "transfer")
+
+    def test_ignored_turn_emits_single_final(self):
+        provider = self._StreamProvider()
+        provider.transcribe_media = lambda audio, content_type="": "..."  # noise
+        session = self._session(provider, ["never"], reply="never")
+        events, final = self._run(session)
+        self.assertEqual([event["type"] for event in events], ["final"])
+        self.assertTrue(final["ignored"])
+        self.assertEqual(final["ignoreReason"], "noise_or_hallucination")
+
+    def test_first_audio_event_fires_once_on_first_audible_sentence(self):
+        # First sentence's TTS fails (no audio), so tts.first_audio must fire on the
+        # SECOND (first audible) sentence, exactly once -- locks the
+        # `audio_b64 and not state["first_audio"]` guard against a no-audio first sentence.
+        provider = self._StreamProvider(fail_on={1})
+        session = self._session(
+            provider, ["Hello. ", "We have a king. "],
+            reply="Hello. We have a king.",
+        )
+        events, final = self._run(session)
+
+        first_audio = [e for e in final["trace"]["events"] if e["name"] == "tts.first_audio"]
+        self.assertEqual(len(first_audio), 1)
+        sentences = [e for e in events if e["type"] == "sentence"]
+        self.assertEqual(sentences[0]["audioBase64"], "")   # first sentence's TTS failed
+        self.assertTrue(sentences[1]["audioBase64"])         # second carried the first audio
+
+    def test_gate_stays_batch_when_streaming_off_or_incapable(self):
+        import os
+        from unittest.mock import patch
+
+        from talk_server import _browser_streaming_enabled
+
+        class CapableAgent:
+            class provider:  # noqa: N801 - attribute stand-in
+                tts_backend = "provider"
+
+                @staticmethod
+                def chat_stream(*args, **kwargs):
+                    return None
+
+        with patch.dict(os.environ, {"STREAMING": "off"}):
+            self.assertFalse(_browser_streaming_enabled(CapableAgent()))
+        with patch.dict(os.environ, {"STREAMING": "on"}):
+            self.assertTrue(_browser_streaming_enabled(CapableAgent()))
+
+            class MockLikeAgent:
+                class provider:  # noqa: N801
+                    tts_backend = "print"
+            self.assertFalse(_browser_streaming_enabled(MockLikeAgent()))
+
+
+class BargeInEchoTests(unittest.TestCase):
+    """Playback-echo suppression on barge-in: normalization must catch smart_format
+    punctuation, and a courtesy phrase is dropped ONLY when the agent actually said it."""
+
+    def test_normalize_strips_all_punctuation_including_smart_format(self):
+        from talk_server import _normalize_echo
+        self.assertEqual(_normalize_echo("Thanks!"), "thanks")
+        self.assertEqual(_normalize_echo("Thank you."), "thank you")
+        self.assertEqual(_normalize_echo("Alright?"), "alright")
+        self.assertEqual(_normalize_echo("You're welcome!"), "youre welcome")
+
+    def test_probable_echo_catches_exclamation_and_question(self):
+        from talk_server import _is_probable_playback_echo
+        self.assertTrue(_is_probable_playback_echo("Thanks!"))       # smart_format restores !
+        self.assertTrue(_is_probable_playback_echo("Thank you."))
+        self.assertFalse(_is_probable_playback_echo("Do you have a room?"))
+
+    def test_last_agent_reply_returns_latest_assistant_content(self):
+        from talk_server import _last_agent_reply
+        agent = type("A", (), {"messages": [
+            {"role": "assistant", "content": "First reply."},
+            {"role": "user", "content": "book"},
+            {"role": "assistant", "content": "Sure, thank you!"},
+        ]})()
+        self.assertEqual(_last_agent_reply(agent), "Sure, thank you!")
+
+    def test_barge_in_echo_matching_reply_is_suppressed(self):
+        import threading
+
+        import talk_server
+
+        class EchoProvider:
+            name = "openai"; llm_model = "x"; stt_model = "s"
+            tts_backend = "provider"; tts_model = "t"; tts_voice = "v"
+
+            def transcribe_media(self, audio, content_type=""):
+                return "Thank you!"  # smart_format '!' echo of what the agent just said
+
+        class FakeSessionAgent:
+            def __init__(self):
+                self.provider = EchoProvider()
+                self.last_sources = []
+                self.current_language = "en"
+                self.current_locale = "en-US"
+                self.messages = [{"role": "assistant", "content": "Booked. Thank you!"}]
+
+        session = "test-echo-suppress"
+        talk_server._agent_sessions[session] = FakeSessionAgent()
+        talk_server._session_locks[session] = threading.Lock()
+        try:
+            payload = _voice_agent_reply(b"audio", "audio/webm", session, "turn-1", True)
+        finally:
+            _reset_session(session)
+        self.assertTrue(payload.get("ignored"))
+        self.assertEqual(payload.get("ignoreReason"), "probable_playback_echo")
+
+    def test_barge_in_genuine_courtesy_not_in_reply_passes_through(self):
+        from talk_server import _transcribe_turn
+
+        class CourtesyProvider:
+            name = "openai"; llm_model = "x"; stt_model = "s"
+            tts_backend = "provider"; tts_model = "t"; tts_voice = "v"
+
+            def transcribe_media(self, audio, content_type=""):
+                return "Thanks"
+
+        class FakeSessionAgent:
+            provider = CourtesyProvider()
+            last_sources = []
+            current_language = "en"
+            current_locale = "en-US"
+            # The agent never said "thanks" -> a genuine "Thanks" interruption must pass.
+            messages = [{"role": "assistant", "content": "We have a Standard Queen for $189."}]
+
+        transcript, ignored = _transcribe_turn(
+            FakeSessionAgent(), FakeTrace(), b"audio", "audio/webm", True,
+        )
+        self.assertIsNone(ignored)
+        self.assertEqual(transcript, "Thanks")
+
+
 if __name__ == "__main__":
     unittest.main()

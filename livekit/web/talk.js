@@ -132,6 +132,23 @@ let pendingBargeInTurn = false;
 let currentTurnWasBargeIn = false;
 let activeAgentAudio = null;
 let playbackToken = 0;
+// Streaming-turn state: the in-flight /voice-agent fetch (aborted on barge-in /
+// end-call) and the sequential sentence-audio queue it feeds.
+let activeTurnAbort = null;
+const agentQueue = {
+  items: [], playing: false, started: false, streamDone: false, playedAny: false,
+  fallbackText: "", fallbackLocale: "en-US",
+};
+
+function resetAgentQueue() {
+  agentQueue.items.length = 0;
+  agentQueue.playing = false;
+  agentQueue.started = false;
+  agentQueue.streamDone = false;
+  agentQueue.playedAny = false;
+  agentQueue.fallbackText = "";
+  agentQueue.fallbackLocale = "en-US";
+}
 let bargeRecordingCandidate = false;
 
 const tuning = {
@@ -149,11 +166,16 @@ const tuning = {
 };
 
 function setCallControls(connected) {
+  const active = document.activeElement;
   startButton.disabled = connected;
   muteButton.disabled = !connected;
   endButton.disabled = !connected;
   callerRoot.classList.toggle("connected", connected);
   agentRoot.classList.toggle("connected", connected);
+  // Keep keyboard focus on an enabled control when the focused one gets disabled
+  // (activating Start would otherwise drop focus to <body>). No focus-steal on init.
+  if (connected && active === startButton) muteButton.focus();
+  else if (!connected && (active === muteButton || active === endButton)) startButton.focus();
 }
 
 // Every voice-state transition already flows through setListeningState, so this
@@ -273,6 +295,7 @@ function chooseVoice(locale) {
 
 function stopAgentPlayback() {
   playbackToken += 1;
+  resetAgentQueue(); // any queued streamed sentences are stale now
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   if (activeAgentAudio) {
     activeAgentAudio.onplay = null;
@@ -282,6 +305,64 @@ function stopAgentPlayback() {
     activeAgentAudio.removeAttribute("src");
     activeAgentAudio = null;
   }
+}
+
+// --- Streaming sentence queue: sequential playback of per-sentence WAV chunks.
+// Reuses the exact begin/finish/token machinery of the batch path; barge-in
+// clears the queue via stopAgentPlayback and aborts the fetch upstream.
+
+function enqueueSentence(item, token) {
+  if (token !== playbackToken) return; // stale chunk from an interrupted turn
+  agentQueue.items.push(item);
+  if (!agentQueue.playing) playNextSentence(token);
+}
+
+function maybeFinishQueue(token) {
+  // Queue drained AND the stream ended: close the turn. If audio chunks existed
+  // but NONE ever played (e.g. autoplay rejection), fall back to the browser
+  // voice so the turn is never silent.
+  if (token !== playbackToken || agentQueue.playing || !agentQueue.streamDone) return;
+  if (!agentQueue.playedAny && agentQueue.fallbackText) {
+    const text = agentQueue.fallbackText;
+    agentQueue.fallbackText = "";
+    appendRuntimeEvent("tts.stream_playback_failed | browser fallback");
+    speakWithBrowserVoice(text, agentQueue.fallbackLocale, token);
+    return;
+  }
+  if (agentQueue.started) finishAgentPlayback(token);
+}
+
+function playNextSentence(token) {
+  if (token !== playbackToken) return;
+  const item = agentQueue.items.shift();
+  if (!item) {
+    agentQueue.playing = false;
+    maybeFinishQueue(token);
+    return;
+  }
+  if (!item.audioBase64) {
+    playNextSentence(token); // TTS failed for this sentence -> skip it
+    return;
+  }
+  agentQueue.playing = true;
+  const audio = new Audio(`data:${item.audioContentType || "audio/wav"};base64,${item.audioBase64}`);
+  activeAgentAudio = audio;
+  const advance = () => {
+    if (token !== playbackToken) return;
+    playNextSentence(token);
+  };
+  audio.onplay = () => {
+    if (token !== playbackToken) return;
+    agentQueue.playedAny = true;
+    if (!agentQueue.started) {
+      agentQueue.started = true;
+      beginAgentPlayback(token, "provider"); // arms barge-in + first_audio ONCE
+      agentBusy = false; // barge-in is live while the rest still streams
+    }
+  };
+  audio.onended = advance;
+  audio.onerror = advance;
+  audio.play().catch(advance);
 }
 
 function beginAgentPlayback(token, backend) {
@@ -357,6 +438,7 @@ function speak(text, locale = "en-US", audioBase64 = "", audioContentType = "aud
 
 function interruptAgent(detectedAt, turnAlreadyRecording = false) {
   if (!agentSpeaking) return;
+  activeTurnAbort?.abort(); // close the stream: server stops synthesizing
   stopAgentPlayback();
   agentSpeaking = false;
   agentRoot.classList.remove("speaking");
@@ -427,14 +509,182 @@ function stopTurnRecording(discard = false) {
   recorder.stop();
 }
 
+function renderIgnoredTurn(payload, refs) {
+  refs.voicePlaceholder?.remove();
+  refs.callerBubble?.remove(); // stream_error path: a transcript event already consumed the placeholder
+  refs.pending?.remove();
+  appendRuntimeEvent(`audio.suppressed | ${payload.ignoreReason}`);
+  renderTrace(payload.trace);
+  // Nothing played on a suppressed turn -- clear First audio so the row isn't this
+  // turn's STT/LLM next to a PRIOR turn's first-audio latency.
+  metrics.firstAudio.textContent = "—";
+  renderSources([]);
+  agentBusy = false;
+  setListeningState("Listening", "Playback echo was suppressed. Continue speaking naturally.");
+}
+
+function renderFinalTurn(payload, refs) {
+  // Shared final rendering for batch AND streaming turns (transcript bubble may
+  // already exist on the streaming path -- refs are nulled once consumed).
+  refs.pending?.remove();
+  refs.voicePlaceholder?.remove();
+  if (!refs.transcriptShown && payload.transcript) {
+    addTranscript("caller", payload.transcript, `STT: ${payload.sttModel}`);
+  }
+  const ttsMeta = payload.ttsBackend === "provider"
+    ? `TTS: ${payload.ttsVoice || payload.ttsModel}`
+    : "Browser TTS";
+  const meta = [payload.language?.toUpperCase(), ttsMeta, payload.action ? `action: ${payload.action}` : ""]
+    .filter(Boolean)
+    .join(" | ");
+  addTranscript("agent", payload.reply, meta);
+  providerEl.textContent = `Provider: ${payload.provider} | ${payload.model} | ${ttsMeta}`;
+  languageEl.textContent = payload.language === "es" ? "Spanish" : "English";
+  setPipelineMode(payload.pipeline);
+  renderSources(payload.sources);
+  renderTrace(payload.trace);
+  if (payload.action === "transfer") agentStatus.textContent = "Transferring";
+  if (payload.action === "hangup") agentStatus.textContent = "Call complete";
+}
+
+async function consumeVoiceStream(response, refs) {
+  // NDJSON events: transcript -> (sentence | reset)* -> final. The connection
+  // close ends the stream; a missing `final` means the turn was truncated.
+  stopAgentPlayback(); // fresh token for this turn's sentence queue
+  const token = playbackToken;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  let sawFinal = false;
+  refs.streamedText = ""; // on refs so the abort path can preserve heard text
+
+  const handleEvent = (event) => {
+    if (event.type === "transcript") {
+      // Fill the caller placeholder IN PLACE. Removing it and re-adding via
+      // addTranscript() would append the real transcript at the BOTTOM of the
+      // thread -- below the agent "Processing turn" bubble that already exists --
+      // so the reply would render above the caller until `final` reordered them.
+      refs.transcriptShown = true;
+      if (refs.voicePlaceholder) {
+        refs.voicePlaceholder.querySelector(".bubble-label").textContent =
+          `Caller Demo | STT: ${event.sttModel}`;
+        refs.voicePlaceholder.querySelector("div:last-child").textContent = event.transcript;
+        refs.voicePlaceholder.removeAttribute("aria-hidden"); // real transcript -> announce it
+        // Keep a handle to the now-real caller bubble: voicePlaceholder is nulled so
+        // the truncation/abort cleanups leave it alone, but an ignored `final`
+        // (stream_error, which arrives AFTER a transcript) must still remove it.
+        refs.callerBubble = refs.voicePlaceholder;
+        refs.voicePlaceholder = null; // consumed: it is now the real caller bubble
+      } else {
+        addTranscript("caller", event.transcript, `STT: ${event.sttModel}`);
+      }
+    } else if (event.type === "sentence") {
+      refs.streamedText = refs.streamedText ? `${refs.streamedText} ${event.text}` : event.text;
+      if (refs.pending) {
+        refs.pending.querySelector("div:last-child").textContent = refs.streamedText;
+      }
+      enqueueSentence(
+        { audioBase64: event.audioBase64, audioContentType: event.audioContentType },
+        token,
+      );
+    } else if (event.type === "reset") {
+      // Tool boundary/degrade: queued-but-unplayed preamble audio is stale. Reset the
+      // playback-progress flags too so the post-tool reply is treated as a FRESH segment
+      // -- otherwise a played preamble leaves playedAny=true and the real reply's
+      // silent-turn (all-TTS-failed) browser-voice fallback never fires.
+      refs.streamedText = "";
+      agentQueue.items.length = 0;
+      agentQueue.playedAny = false;
+      agentQueue.started = false;
+      if (refs.pending) {
+        refs.pending.querySelector("div:last-child").textContent = "Processing turn";
+      }
+    } else if (event.type === "final") {
+      sawFinal = true;
+      agentQueue.streamDone = true;
+      if (event.ignored) {
+        renderIgnoredTurn(event, refs);
+        return;
+      }
+      renderFinalTurn(event, refs);
+      refs.pending = null;
+      agentBusy = false;
+      if (event.ttsFallback && !agentQueue.playedAny) {
+        // No audio chunk made it -- speak the whole reply with the browser voice.
+        speak(event.reply, event.locale || "en-US", "", "audio/wav");
+        return;
+      }
+      // If chunks exist but none ever PLAYS (autoplay rejection), the drain
+      // check speaks the reply with the browser voice instead of going silent.
+      agentQueue.fallbackText = event.reply || "";
+      agentQueue.fallbackLocale = event.locale || "en-US";
+      maybeFinishQueue(token);
+    } else if (event.type === "error") {
+      appendRuntimeEvent(`stream.error | ${event.error}`);
+    }
+  };
+
+  const STREAM_IDLE_MS = 20000; // a half-open stream that stalls without closing must not
+  while (true) {                // freeze the turn loop -- abort it so cleanup runs.
+    let idleTimer;
+    const idle = new Promise((resolve) => {
+      idleTimer = setTimeout(() => resolve("__idle__"), STREAM_IDLE_MS);
+    });
+    const readPromise = reader.read();
+    readPromise.catch(() => {}); // swallow the post-abort rejection (avoid unhandled)
+    const result = await Promise.race([readPromise, idle]);
+    clearTimeout(idleTimer);
+    if (result === "__idle__") {
+      appendRuntimeEvent("stream.idle_timeout");
+      activeTurnAbort?.abort(); // -> falls through to the !sawFinal cleanup below
+      break;
+    }
+    const { done, value } = result;
+    if (done) break;
+    buffered += decoder.decode(value, { stream: true });
+    let newline;
+    while ((newline = buffered.indexOf("\n")) >= 0) {
+      const line = buffered.slice(0, newline).trim();
+      buffered = buffered.slice(newline + 1);
+      if (line) handleEvent(JSON.parse(line));
+    }
+  }
+  if (!sawFinal) {
+    appendRuntimeEvent("stream.truncated");
+    refs.pending?.remove();
+    refs.voicePlaceholder?.remove();
+    agentBusy = false;
+    // Close out playback state so agentSpeaking can't stay stuck true (which
+    // would leave the VAD in barge-mode forever).
+    agentQueue.streamDone = true;
+    agentQueue.fallbackText = "";
+    if (agentQueue.playing) {
+      agentQueue.items.length = 0; // let the current sentence finish, then close
+    } else {
+      maybeFinishQueue(token);
+    }
+    if (listenStream) {
+      setListeningState("Listening", "Speak naturally. Vera can be interrupted while talking.");
+    }
+  }
+}
+
 async function sendAudioToAgent(audioBlob) {
   agentBusy = true;
   setListeningState("Processing", "Transcribing and running the hotel agent.");
-  const voicePlaceholder = addTranscript("caller", "Voice turn", "transcribing");
-  const pending = addTranscript("agent", "Processing turn", "STT -> Router -> RAG -> LLM -> Tools");
+  const refs = {
+    voicePlaceholder: addTranscript("caller", "Voice turn", "transcribing"),
+    pending: addTranscript("agent", "Processing turn", "STT -> Router -> RAG -> LLM -> Tools"),
+    transcriptShown: false,
+  };
+  // Placeholders are transient scaffolding -- hide them from the aria-live transcript log
+  // (the role=status listening-state already announces turn progress). Un-hidden once real.
+  refs.voicePlaceholder.setAttribute("aria-hidden", "true");
+  refs.pending.setAttribute("aria-hidden", "true");
   const turnId = `turn-${++turnCounter}`;
   const wasBargeIn = currentTurnWasBargeIn;
   currentTurnWasBargeIn = false;
+  activeTurnAbort = new AbortController();
 
   try {
     const response = await fetch("/voice-agent", {
@@ -446,35 +696,27 @@ async function sendAudioToAgent(audioBlob) {
         "X-Barge-In": String(wasBargeIn),
       },
       body: audioBlob,
+      signal: activeTurnAbort.signal,
     });
-    const payload = await response.json();
-    pending.remove();
-    if (!response.ok) throw new Error(payload.error || `Voice request failed: ${response.status}`);
 
-    if (payload.ignored) {
-      voicePlaceholder.remove();
-      appendRuntimeEvent(`audio.suppressed | ${payload.ignoreReason}`);
-      renderTrace(payload.trace);
-      renderSources([]);
-      agentBusy = false;
-      setListeningState("Listening", "Playback echo was suppressed. Continue speaking naturally.");
+    if ((response.headers.get("Content-Type") || "").includes("application/x-ndjson")) {
+      await consumeVoiceStream(response, refs);
       return;
     }
 
-    voicePlaceholder.remove();
-    addTranscript("caller", payload.transcript, `STT: ${payload.sttModel}`);
-    const ttsMeta = payload.ttsBackend === "provider"
-      ? `TTS: ${payload.ttsVoice || payload.ttsModel}`
-      : "Browser TTS";
-    const meta = [payload.language?.toUpperCase(), ttsMeta, payload.action ? `action: ${payload.action}` : ""]
-      .filter(Boolean)
-      .join(" | ");
-    addTranscript("agent", payload.reply, meta);
-    providerEl.textContent = `Provider: ${payload.provider} | ${payload.model} | ${ttsMeta}`;
-    languageEl.textContent = payload.language === "es" ? "Spanish" : "English";
-    setPipelineMode(payload.pipeline);
-    renderSources(payload.sources);
-    renderTrace(payload.trace);
+    const payload = await response.json();
+    refs.pending.remove();
+    refs.pending = null;
+    if (!response.ok) throw new Error(payload.error || `Voice request failed: ${response.status}`);
+
+    if (payload.ignored) {
+      renderIgnoredTurn(payload, refs);
+      return;
+    }
+
+    refs.voicePlaceholder.remove();
+    refs.voicePlaceholder = null;
+    renderFinalTurn(payload, refs);
     agentBusy = false;
     speak(
       payload.reply,
@@ -482,12 +724,29 @@ async function sendAudioToAgent(audioBlob) {
       payload.audioBase64 || "",
       payload.audioContentType || "audio/wav",
     );
-    if (payload.action === "transfer") agentStatus.textContent = "Transferring";
-    if (payload.action === "hangup") agentStatus.textContent = "Call complete";
   } catch (error) {
-    pending.remove();
-    voicePlaceholder.remove();
-    addTranscript("agent", error.message, "error");
+    if (error.name === "AbortError") {
+      // Intentional: barge-in or end-call cancelled the turn mid-stream. Keep
+      // the sentences the caller already HEARD in the transcript instead of
+      // erasing them (the agent's history keeps the full reply server-side).
+      if (refs.pending && refs.streamedText) {
+        refs.pending.querySelector(".bubble-label").textContent += " | interrupted";
+        refs.pending = null;
+      }
+      refs.pending?.remove();
+      refs.voicePlaceholder?.remove();
+      appendRuntimeEvent("turn.aborted");
+      agentBusy = false;
+      return;
+    }
+    refs.pending?.remove();
+    refs.voicePlaceholder?.remove();
+    // A mid-stream network failure can leave sentence audio queued/playing --
+    // close it all out so agentSpeaking can't stay stuck true.
+    stopAgentPlayback();
+    agentSpeaking = false;
+    agentRoot.classList.remove("speaking");
+    addTranscript("agent", error.message, "error").classList.add("error");
     agentBusy = false;
     setListeningState("Error", "The turn failed. Speak again to retry.");
   }
@@ -639,6 +898,11 @@ async function startCall() {
     throw new Error("This browser does not support the required audio APIs.");
   }
   setCallControls(true);
+  // Fresh call: clear per-turn latency state so the greeting/first turn can't display a
+  // prior call's First audio, and a leftover endpoint stamp can't skew the next metric.
+  lastEndpointAt = 0;
+  for (const el of Object.values(metrics)) el.textContent = "0 ms";
+  languageEl.textContent = "English"; // reset agent starts in English; don't show prior call's language
   agentBusy = true;
   callerStatus.textContent = "Connecting";
   agentStatus.textContent = "Connecting";
@@ -667,6 +931,8 @@ async function startCall() {
     setPipelineMode(greeting.pipeline);
     renderTrace(greeting.trace);
     agentBusy = false;
+    if (!listenStream) return; // hung up during the in-flight greeting fetch -> stay silent
+    addTranscript("agent", greeting.reply, ttsMeta);
     speak(
       greeting.reply,
       greeting.locale || "en-US",
@@ -675,8 +941,11 @@ async function startCall() {
     );
   } catch (error) {
     agentBusy = false;
+    if (!listenStream) return;
+    const fallback = "Thanks for calling Vera Hotel reservations. How can I help?";
     appendRuntimeEvent("tts.greeting_fallback | browser");
-    speak("Thanks for calling Vera Hotel reservations. How can I help?", "en-US");
+    addTranscript("agent", fallback, "Browser TTS");
+    speak(fallback, "en-US");
   }
 }
 
@@ -684,6 +953,7 @@ async function endCall() {
   if (vadFrame) cancelAnimationFrame(vadFrame);
   vadFrame = null;
   stopTurnRecording(true);
+  activeTurnAbort?.abort(); // kill any in-flight streamed turn
   stopAgentPlayback();
   agentSpeaking = false;
   agentBusy = false;
@@ -709,6 +979,9 @@ async function endCall() {
 
 async function toggleMute() {
   muted = !muted;
+  // Muting mid-turn: discard the in-flight recorder. Its endpoint/maxTurn cutoffs run
+  // in vadLoop gated behind !muted, so without this the recorder would run unbounded.
+  if (muted) stopTurnRecording(true);
   listenStream?.getAudioTracks().forEach((track) => { track.enabled = !muted; });
   muteButton.textContent = muted ? "Unmute" : "Mute";
   callerStatus.textContent = muted ? "Muted" : "Connected";
@@ -739,8 +1012,11 @@ sensitivityControl.addEventListener("input", () => {
 
 startButton.addEventListener("click", () => {
   startCall().catch(async (error) => {
-    setListeningState("Connection failed", error.message);
+    // Clean up FIRST -- endCall() ends with setListeningState("Idle", ...), which would
+    // otherwise overwrite the error in the same microtask (no paint between them).
     await endCall();
+    setListeningState("Connection failed", error.message);
+    addTranscript("agent", error.message, "error").classList.add("error");
   });
 });
 muteButton.addEventListener("click", () => toggleMute().catch((error) => {

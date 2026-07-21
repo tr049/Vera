@@ -759,6 +759,16 @@ button:disabled {
   font-weight: 600;
 }
 
+/* Turn/connection failures: distinguish an error reply from a normal agent bubble. */
+.bubble.error {
+  border-color: var(--danger);
+  background: var(--danger-tint);
+}
+
+.bubble.error .bubble-label {
+  color: var(--danger);
+}
+
 /* kept for the events log (.event-row); transcript bubbles animate via Motion */
 @keyframes bubbleIn {
   from { opacity: 0; transform: translateY(8px); }

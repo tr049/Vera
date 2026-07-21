@@ -50,6 +50,21 @@ def parse_date(value) -> date | None:
     return None
 
 
+def parse_range(check_in, check_out) -> "tuple[date | None, date | None]":
+    """Parse a (check_in, check_out) pair, rolling check_out to the NEXT year on a
+    genuine new-year wrap (e.g. Dec 30 -> Jan 2), mirroring agent._validate_stay so the
+    interval the agent validated is the same interval inventory stores/compares. Without
+    this, a wrap re-parses to end < start and overlap math silently allows double-booking.
+    Returns (None, None) if either endpoint is unparseable."""
+    start = parse_date(check_in)
+    end = parse_date(check_out)
+    if start is None or end is None:
+        return None, None
+    if end <= start:
+        end = end.replace(year=end.year + 1)
+    return start, end
+
+
 def _overlaps(a_in: date, a_out: date, b_in: date, b_out: date) -> bool:
     """True if [a_in, a_out) and [b_in, b_out) intersect (checkout day is free)."""
     return a_in < b_out and b_in < a_out
@@ -60,8 +75,7 @@ def _conflict(room_key: str, start: date, end: date) -> bool:
     for booking in _bookings:
         if booking["room_key"] != room_key:
             continue
-        booked_in = parse_date(booking["check_in"])
-        booked_out = parse_date(booking["check_out"])
+        booked_in, booked_out = parse_range(booking["check_in"], booking["check_out"])
         if booked_in and booked_out and _overlaps(start, end, booked_in, booked_out):
             return True
     return False
@@ -74,9 +88,8 @@ def is_available(room_key: str, check_in, check_out) -> bool:
     An unparseable/degenerate range returns True  -  availability is not where bad
     input is rejected (run_tool validates the dates first).
     """
-    start = parse_date(check_in)
-    end = parse_date(check_out)
-    if start is None or end is None or end <= start:
+    start, end = parse_range(check_in, check_out)
+    if start is None or end is None:
         return True
     with _lock:
         return not _conflict(room_key, start, end)
@@ -90,8 +103,7 @@ def book_if_available(room_key: str, check_in, check_out,
     already taken. The overlap check and the append happen under a SINGLE lock, so
     two concurrent callers can never double-book the same room+dates.
     """
-    start = parse_date(check_in)
-    end = parse_date(check_out)
+    start, end = parse_range(check_in, check_out)
     with _lock:
         if start is not None and end is not None and _conflict(room_key, start, end):
             return None

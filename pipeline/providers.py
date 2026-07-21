@@ -490,7 +490,9 @@ def _mock_knowledge_request(text: str) -> bool:
     # when qualified (time/when/policy), so "check in this weekend" stays a booking.
     return any(word in text for word in (
         "cancellation policy", "cancel policy", "parking", "pets", "pet policy",
-        "breakfast", "accessible", "accessibility", "policy",
+        # "accessible" alone collides with the bookable "accessible room"; keep only the
+        # accessibility-question wording so "book an accessible room" stays a booking.
+        "breakfast", "accessibility", "wheelchair accessible", "ada accessible", "policy",
         "check-in time", "check in time", "check-out time", "check out time",
         "when is check", "what time is check", "when can i check", "when do i check",
         "check-in policy", "check-out policy",

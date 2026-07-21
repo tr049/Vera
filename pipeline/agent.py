@@ -219,7 +219,10 @@ _KNOWLEDGE_INTENT_PHRASES = (
     "when is check-in", "when is check in", "when is check-out", "when is check out",
     "what time is check", "what time can i check", "when can i check", "when do i check",
     "check-in policy", "check-out policy",
-    "accessibility", "accessible room", "wi-fi", "wifi", "amenities",
+    # "accessible" is ALSO a bookable room type, so "book an accessible room" must reach
+    # check_availability; only accessibility-as-a-question wording force-routes to RAG.
+    "accessibility", "wheelchair accessible", "ada accessible", "accessible features",
+    "wi-fi", "wifi", "amenities",
     "política de cancelación", "politica de cancelacion", "mascotas",
     "estacionamiento", "desayuno", "accesibilidad",
 )

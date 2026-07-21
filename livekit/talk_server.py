@@ -29,8 +29,12 @@ REPO_ROOT = ROOT.parent
 PIPELINE_ROOT = REPO_ROOT / "pipeline"
 
 _session_registry_lock = threading.Lock()
-_agent_sessions: dict[str, object] = {}
+# LRU-bounded so a flood of distinct X-Session-IDs can't grow the registry without
+# limit (each id builds a full Agent). Ordered so the oldest idle session evicts first.
+_agent_sessions: "OrderedDict[str, object]" = OrderedDict()
 _session_locks: dict[str, threading.Lock] = {}
+MAX_SESSIONS = 100
+MAX_BODY_BYTES = 25 * 1024 * 1024  # reject oversized POST bodies (audio turns are well under this)
 
 GREETING = "Thanks for calling Vera Hotel reservations. How can I help?"
 
@@ -78,6 +82,22 @@ def _get_session(session_id: str):
         if session_id not in _agent_sessions:
             _agent_sessions[session_id] = _new_agent()
             _session_locks[session_id] = threading.Lock()
+        else:
+            _agent_sessions.move_to_end(session_id)  # mark most-recently-used
+        # Evict least-recently-used sessions beyond the cap, skipping any whose lock
+        # is currently held (a turn is in flight) and the session we just returned.
+        while len(_agent_sessions) > MAX_SESSIONS:
+            for old_id in list(_agent_sessions):  # oldest first
+                if old_id == session_id:
+                    continue
+                lock = _session_locks.get(old_id)
+                if lock is not None and lock.locked():
+                    continue
+                _agent_sessions.pop(old_id, None)
+                _session_locks.pop(old_id, None)
+                break
+            else:
+                break  # nothing evictable this pass
         return _agent_sessions[session_id], _session_locks[session_id]
 
 
@@ -472,7 +492,12 @@ class Handler(SimpleHTTPRequestHandler):
                 "languages": ["en", "es"],
             })
         if parsed.path != "/token":
-            return super().do_GET()
+            # Only static assets under /web/ are served. The handler's directory is the
+            # livekit/ root, so an unrestricted GET would expose /.env and /talk_server.py
+            # (SimpleHTTPRequestHandler filters '..' but NOT dotfiles) to any client.
+            if parsed.path.startswith("/web/"):
+                return super().do_GET()
+            return self.send_error(404)
 
         query = parse_qs(parsed.query)
         identity = query.get("identity", ["caller-demo"])[0]
@@ -486,6 +511,18 @@ class Handler(SimpleHTTPRequestHandler):
             "token": _token(identity, name, room),
         }
         self._send_json(payload)
+
+    def _read_length(self) -> "int | None":
+        """Parse + bound Content-Length; send an error and return None if invalid."""
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send_json({"error": "Invalid Content-Length"}, status=400)
+            return None
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._send_json({"error": "Request body too large"}, status=413)
+            return None
+        return length
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -506,7 +543,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         try:
-            length = int(self.headers.get("Content-Length", "0"))
+            length = self._read_length()
+            if length is None:
+                return
             body = self.rfile.read(length)
             payload = json.loads(body or b"{}")
             text = str(payload.get("text", "")).strip()
@@ -520,21 +559,53 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_voice_agent(self, session_id: str, turn_id: str | None) -> None:
         try:
-            length = int(self.headers.get("Content-Length", "0"))
+            length = self._read_length()
+            if length is None:
+                return
             audio = self.rfile.read(length)
             if not audio:
                 raise ValueError("Missing audio")
-            response = _voice_agent_reply(
-                audio,
-                self.headers.get("Content-Type", ""),
-                session_id,
-                turn_id,
-                self.headers.get("X-Barge-In", "false").lower() == "true",
-            )
+            content_type = self.headers.get("Content-Type", "")
+            barge = self.headers.get("X-Barge-In", "false").lower() == "true"
+            agent, _lock = _get_session(session_id)
+            if _browser_streaming_enabled(agent):
+                return self._stream_voice_agent(audio, content_type, session_id, turn_id, barge)
+            response = _voice_agent_reply(audio, content_type, session_id, turn_id, barge)
         except Exception as exc:
             self._send_json({"error": str(exc)}, status=500)
             return
         self._send_json(response)
+
+    def _stream_voice_agent(self, audio, content_type, session_id, turn_id, barge) -> None:
+        # HTTP/1.0 + no Content-Length = close-delimited body: each event line is
+        # flushed as it happens and the socket close marks end-of-stream. The
+        # client detects streaming mode purely from this Content-Type.
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return  # client vanished before headers; nothing to stream
+        try:
+            _stream_voice_agent_reply(
+                audio, content_type, session_id, turn_id, barge,
+                emit=self._write_stream_event,
+            )
+        except Exception as exc:
+            # Headers are already sent -- degrade in-band; the missing `final`
+            # tells the client the stream was truncated.
+            self._write_stream_event({"type": "error", "error": type(exc).__name__})
+
+    def _write_stream_event(self, event: dict) -> bool:
+        """Write one NDJSON event; False once the client is gone (barge-in abort,
+        tab close) so the producer can stop spending on TTS."""
+        try:
+            self.wfile.write(json.dumps(event).encode("utf-8") + b"\n")
+            self.wfile.flush()
+            return True
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return False
 
     def _send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload).encode("utf-8")

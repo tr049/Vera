@@ -387,6 +387,7 @@ class _StubBase:
 
 
 class _StubSpeech:
+    name = "deepgram"
     stt_model = "nova-3"
     tts_model = "aura-2"
     tts_voice = "aura-2"
@@ -427,7 +428,7 @@ class DeepgramOverrideTests(unittest.TestCase):
         self.assertEqual(provider.transcribe_media(b"", "audio/webm"), provider._stt_script[0])
 
     def test_override_routes_stt_and_tts_to_speech_backend(self):
-        provider = SpeechOverrideProvider(_StubBase(), _StubSpeech(), use_stt=True, use_tts=True)
+        provider = SpeechOverrideProvider(_StubBase(), stt=(dg := _StubSpeech()), tts=dg)
         self.assertEqual(provider.name, "groq+dg-stt+dg-tts")
         self.assertEqual(provider.llm_model, "llm")
         self.assertEqual(provider.chat([]), "chat")            # LLM stays on base
@@ -437,14 +438,14 @@ class DeepgramOverrideTests(unittest.TestCase):
         self.assertEqual(provider.stt_model, "nova-3")
 
     def test_override_stt_only_leaves_tts_on_base(self):
-        provider = SpeechOverrideProvider(_StubBase(), _StubSpeech(), use_stt=True, use_tts=False)
+        provider = SpeechOverrideProvider(_StubBase(), stt=_StubSpeech())
         self.assertEqual(provider.name, "groq+dg-stt")  # name reflects only STT routed
         self.assertEqual(provider.transcribe(b""), "dg-transcribe")
         self.assertEqual(provider.synthesize("hi"), b"base-audio")
         self.assertEqual(provider.tts_model, "base-tts")
 
     def test_voice_for_delegates_to_speech_when_deepgram_tts_active(self):
-        provider = SpeechOverrideProvider(_StubBase(), _StubSpeech(), use_stt=False, use_tts=True)
+        provider = SpeechOverrideProvider(_StubBase(), tts=_StubSpeech())
         self.assertEqual(provider.voice_for("es"), "aura-2-celeste-es")  # per-turn native voice
         self.assertEqual(provider.voice_for("en"), "aura-2-luna-en")
 
@@ -452,7 +453,7 @@ class DeepgramOverrideTests(unittest.TestCase):
         # STT-only Deepgram: TTS runs on the base provider, so voice_for must report the
         # base voice (not a Deepgram voice) and tts_model stays the base model -- this is
         # what keeps the browser TTS label correct in a two-vendor stack.
-        provider = SpeechOverrideProvider(_StubBase(), _StubSpeech(), use_stt=True, use_tts=False)
+        provider = SpeechOverrideProvider(_StubBase(), stt=_StubSpeech())
         self.assertEqual(provider.voice_for("es"), "base-voice")
         self.assertEqual(provider.tts_model, "base-tts")
 
@@ -471,7 +472,7 @@ class DeepgramOverrideTests(unittest.TestCase):
         base = _StubBase()
         base.tts_backend = "system"
         base.synthesize = lambda text, language=None: None  # local `say` returns None
-        provider = SpeechOverrideProvider(base, _StubSpeech(), use_stt=False, use_tts=True)
+        provider = SpeechOverrideProvider(base, tts=_StubSpeech())
         self.assertIsNone(provider.synthesize("hi"))  # system backend -> not Deepgram
 
     def test_deepgram_synthesize_picks_native_voice_by_language(self):
@@ -509,10 +510,11 @@ class DeepgramOverrideTests(unittest.TestCase):
 
         dg = DeepgramSpeech.__new__(DeepgramSpeech)  # bypass __init__ (no key/SDK)
         dg.stt_model = "nova-3"
+        dg.stt_language = "multi"
         dg._client = NS(listen=NS(v1=NS(media=FakeMedia())))
 
         self.assertEqual(dg.transcribe_media(b"audio", "audio/webm"), "book a room")
-        self.assertEqual(captured["language"], "multi")   # always multilingual
+        self.assertEqual(captured["language"], "multi")   # default: multilingual
         self.assertIn("Vera", captured["keyterm"])        # hotel vocab biasing
 
 
@@ -621,7 +623,7 @@ class StreamingTests(unittest.TestCase):
         self.assertEqual(call.function.arguments, '{"guests": 2}')  # fragments joined
 
     def test_speech_override_chat_stream_delegates_to_base(self):
-        provider = SpeechOverrideProvider(_StubBase(), _StubSpeech(), use_stt=True, use_tts=False)
+        provider = SpeechOverrideProvider(_StubBase(), stt=_StubSpeech())
         fired = []
         resp = provider.chat_stream([], on_delta=fired.append)
         self.assertEqual(fired, ["chat"])                       # base's on_delta ran
@@ -738,6 +740,220 @@ class StreamingTests(unittest.TestCase):
         self.assertTrue(reply.strip())                 # an apology was returned
         self.assertEqual(spoken, [reply])              # ...and it was actually spoken
         self.assertNotIn("The room", spoken)           # orphaned partial was dropped
+
+
+class _FakeVendorProvider:
+    """Stands in for Provider in make_provider matrix tests (no keys, no SDK)."""
+
+    constructed: list[str] = []
+
+    def __init__(self, name=None):
+        import os as _os
+        name = (name or _os.getenv("PROVIDER", "groq")).lower()
+        type(self).constructed.append(name)
+        self.name = name
+        self.llm_model = f"{name}-llm"
+        self.stt_model = f"{name}-stt"
+        self.tts_model = f"{name}-tts"
+        self.tts_voice = f"{name}-voice"
+        self.tts_backend = "provider"
+
+    def transcribe(self, pcm, sample_rate=16000):
+        return f"{self.name}-transcribe"
+
+    def synthesize(self, text, language=None):
+        return f"{self.name}-audio".encode()
+
+
+class _FakeDeepgram:
+    name = "deepgram"
+    constructed: list[str] = []
+
+    def __init__(self):
+        type(self).constructed.append("deepgram")
+        self.stt_model = "nova-3"
+        self.tts_model = "aura-2-luna-en"
+        self.tts_voice = "aura-2-luna-en"
+
+    def synthesize(self, text, language=None):
+        return b"dg-audio"
+
+
+class ProviderMixTests(unittest.TestCase):
+    """make_provider matrix: STT_PROVIDER/TTS_PROVIDER accept openai|groq|deepgram."""
+
+    def setUp(self):
+        _FakeVendorProvider.constructed = []
+        _FakeDeepgram.constructed = []
+        patcher_p = patch("providers.Provider", _FakeVendorProvider)
+        patcher_d = patch("deepgram_speech.DeepgramSpeech", _FakeDeepgram)
+        patcher_p.start(); patcher_d.start()
+        self.addCleanup(patcher_p.stop)
+        self.addCleanup(patcher_d.stop)
+
+    def test_unknown_override_lists_all_vendors_before_any_key(self):
+        with patch.dict(os.environ, {"STT_PROVIDER": "whisper-cloud"}):
+            with self.assertRaises(ValueError) as ctx:
+                make_provider("openai")
+        for vendor in ("deepgram", "groq", "openai"):
+            self.assertIn(vendor, str(ctx.exception))
+        self.assertEqual(_FakeVendorProvider.constructed, [])  # fail-fast, key-free
+
+    def test_stt_provider_openai_builds_second_provider(self):
+        with patch.dict(os.environ, {"STT_PROVIDER": "openai", "TTS_PROVIDER": ""}):
+            provider = make_provider("groq")
+        self.assertEqual(provider.name, "groq+oai-stt")
+        self.assertEqual(provider.transcribe(b""), "openai-transcribe")  # STT routed
+        self.assertEqual(provider.synthesize("hi"), b"groq-audio")       # TTS on base
+        self.assertEqual(provider.stt_model, "openai-stt")
+
+    def test_tts_provider_groq_under_openai_base(self):
+        with patch.dict(os.environ, {"STT_PROVIDER": "", "TTS_PROVIDER": "groq", "TTS_BACKEND": "provider"}):
+            provider = make_provider("openai")
+        self.assertEqual(provider.name, "openai+groq-tts")
+        self.assertEqual(provider.synthesize("hi"), b"groq-audio")
+        self.assertEqual(provider.transcribe(b""), "openai-transcribe")
+
+    def test_override_matching_base_is_noop(self):
+        with patch.dict(os.environ, {"STT_PROVIDER": "groq", "TTS_PROVIDER": ""}):
+            provider = make_provider("groq")
+        self.assertIsInstance(provider, _FakeVendorProvider)  # bare base, no wrapper
+        self.assertEqual(provider.name, "groq")
+
+    def test_same_override_vendor_constructed_once_across_stages(self):
+        with patch.dict(os.environ, {"STT_PROVIDER": "openai", "TTS_PROVIDER": "openai", "TTS_BACKEND": "provider"}):
+            provider = make_provider("groq")
+        self.assertEqual(provider.name, "groq+oai-stt+oai-tts")
+        # base groq + ONE shared openai backend
+        self.assertEqual(_FakeVendorProvider.constructed, ["groq", "openai"])
+
+    def test_three_vendor_mix(self):
+        with patch.dict(os.environ, {"STT_PROVIDER": "openai", "TTS_PROVIDER": "deepgram", "TTS_BACKEND": "provider"}):
+            provider = make_provider("groq")
+        self.assertEqual(provider.name, "groq+oai-stt+dg-tts")
+        self.assertEqual(provider.transcribe(b""), "openai-transcribe")
+        self.assertEqual(provider.synthesize("hi"), b"dg-audio")
+        self.assertEqual(_FakeDeepgram.constructed, ["deepgram"])
+
+    def test_voice_for_falls_back_to_static_voice_for_plain_provider_tts(self):
+        # A plain Provider TTS backend has no voice_for -> static tts_voice label.
+        with patch.dict(os.environ, {"STT_PROVIDER": "", "TTS_PROVIDER": "openai", "TTS_BACKEND": "provider"}):
+            provider = make_provider("groq")
+        self.assertEqual(provider.voice_for("es"), "openai-voice")
+
+    def test_mock_still_ignores_all_overrides(self):
+        with patch.dict(os.environ, {"STT_PROVIDER": "openai", "TTS_PROVIDER": "deepgram", "TTS_BACKEND": "provider"}):
+            provider = make_provider("mock")
+        self.assertIsInstance(provider, MockProvider)
+        self.assertEqual(_FakeVendorProvider.constructed, [])
+
+    def test_system_tts_backend_skips_tts_override_construction(self):
+        # TTS_BACKEND=system means the override would never be used -- it must not
+        # be constructed (no key demanded) and the provider stays unwrapped.
+        with patch.dict(os.environ, {"STT_PROVIDER": "", "TTS_PROVIDER": "groq",
+                                     "TTS_BACKEND": "system"}):
+            provider = make_provider("openai")
+        self.assertIsInstance(provider, _FakeVendorProvider)  # bare base
+        self.assertEqual(_FakeVendorProvider.constructed, ["openai"])  # no groq built
+
+
+class DeepgramHardeningTests(unittest.TestCase):
+    def _dg_with_fake_speak(self, behaviors):
+        """DeepgramSpeech via __new__ with a generate() scripted per call."""
+        from types import SimpleNamespace as NS
+        calls = {"n": 0}
+
+        def generate(**kwargs):
+            behavior = behaviors[min(calls["n"], len(behaviors) - 1)]
+            calls["n"] += 1
+            if isinstance(behavior, Exception):
+                raise behavior
+            return iter(behavior)
+
+        dg = DeepgramSpeech.__new__(DeepgramSpeech)
+        dg._voices = {"en": "aura-2-luna-en", "es": "aura-2-celeste-es"}
+        dg._client = NS(speak=NS(v1=NS(audio=NS(generate=generate))))
+        return dg, calls
+
+    def test_synthesize_retries_once_on_dropped_connection(self):
+        dg, calls = self._dg_with_fake_speak([ConnectionError("dropped"), [b"RIFF", b"ok"]])
+        self.assertEqual(dg.synthesize("hi", "en"), b"RIFFok")
+        self.assertEqual(calls["n"], 2)  # failed once, retried once
+
+    def test_synthesize_gives_up_after_one_retry(self):
+        dg, calls = self._dg_with_fake_speak([ConnectionError("down")])
+        with self.assertRaises(ConnectionError):
+            dg.synthesize("hi", "en")
+        self.assertEqual(calls["n"], 2)  # exactly two attempts, then propagate
+
+    def test_api_errors_are_not_retried(self):
+        dg, calls = self._dg_with_fake_speak([ValueError("bad voice")])
+        with self.assertRaises(ValueError):
+            dg.synthesize("hi", "en")
+        self.assertEqual(calls["n"], 1)  # non-transient -> no retry
+
+    def test_stt_language_env_knob(self):
+        from types import SimpleNamespace as NS
+        captured = {}
+
+        class FakeMedia:
+            def transcribe_file(self, *, request, model, language, smart_format, keyterm):
+                captured["language"] = language
+                return NS(results=NS(channels=[NS(alternatives=[NS(transcript="ok")])]))
+
+        dg = DeepgramSpeech.__new__(DeepgramSpeech)
+        dg.stt_model = "nova-3"
+        dg.stt_language = "en"  # what STT_LANGUAGE=en produces
+        dg._client = NS(listen=NS(v1=NS(media=FakeMedia())))
+        self.assertEqual(dg.transcribe_media(b"audio"), "ok")
+        self.assertEqual(captured["language"], "en")
+
+    def test_generic_voice_and_language_env_knobs(self):
+        # The Deepgram backend reads GENERIC knobs -- TTS_VOICE (EN), TTS_VOICE_ES (ES),
+        # STT_LANGUAGE -- not vendor-prefixed ones. Guards against a regression to the
+        # old DEEPGRAM_TTS_VOICE_ES / DEEPGRAM_STT_LANGUAGE names.
+        import sys
+        import types
+
+        fake = types.ModuleType("deepgram")
+        fake.DeepgramClient = lambda api_key: object()
+        with patch.dict(sys.modules, {"deepgram": fake}), patch.dict(
+            os.environ,
+            {"DEEPGRAM_API_KEY": "test-key", "TTS_VOICE": "aura-2-thalia-en",
+             "TTS_VOICE_ES": "aura-2-diana-es", "STT_LANGUAGE": "en"},
+        ):
+            dg = DeepgramSpeech()
+        self.assertEqual(dg.voice_for("en"), "aura-2-thalia-en")
+        self.assertEqual(dg.voice_for("es"), "aura-2-diana-es")
+        self.assertEqual(dg.stt_language, "en")
+
+    def test_non_deepgram_stt_model_fails_fast_at_boot(self):
+        # A stale non-Deepgram STT_MODEL (an OpenAI/Groq value left set when routing STT
+        # to Deepgram) must raise at construction, not crash on the first transcription.
+        import sys
+        import types
+
+        fake = types.ModuleType("deepgram")
+        fake.DeepgramClient = lambda api_key: object()
+        with patch.dict(sys.modules, {"deepgram": fake}), patch.dict(
+            os.environ, {"DEEPGRAM_API_KEY": "k", "STT_MODEL": "whisper-large-v3-turbo"},
+        ):
+            with self.assertRaises(RuntimeError):
+                DeepgramSpeech()
+
+    def test_non_deepgram_tts_voice_fails_fast_at_boot(self):
+        # TTS_VOICE=alloy (OpenAI) leaking into a Deepgram-owned TTS stage must raise at
+        # construction rather than sending "alloy" as a voice and 400-ing on first synth.
+        import sys
+        import types
+
+        fake = types.ModuleType("deepgram")
+        fake.DeepgramClient = lambda api_key: object()
+        with patch.dict(sys.modules, {"deepgram": fake}), patch.dict(
+            os.environ, {"DEEPGRAM_API_KEY": "k", "TTS_VOICE": "alloy"},
+        ):
+            with self.assertRaises(RuntimeError):
+                DeepgramSpeech()
 
 
 if __name__ == "__main__":

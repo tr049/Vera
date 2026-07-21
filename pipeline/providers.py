@@ -559,84 +559,111 @@ def _grounded_policy_reply(result: str, spanish: bool, query: str) -> str:
     return "I found the relevant Vera Hotel policy and can help apply it to your reservation."
 
 
-class SpeechOverrideProvider:
-    """Composes a base LLM provider (groq/openai) with a Deepgram speech backend.
+# Short stage-label tags so provider names stay readable ("groq+oai-stt+dg-tts").
+_BACKEND_TAGS = {"deepgram": "dg", "openai": "oai"}
 
-    Deepgram has no LLM, so `chat()` always goes to the base provider; STT and/or
-    TTS are routed to Deepgram per the STT_PROVIDER / TTS_PROVIDER flags. This is
-    how a two-vendor stack (e.g. Groq LLM + Deepgram speech) stays behind the one
-    provider interface the agent and servers already consume.
+
+class SpeechOverrideProvider:
+    """Composes a base LLM provider (groq/openai) with per-stage speech backends.
+
+    `chat()`/`chat_stream()` always go to the base provider; STT and/or TTS are
+    routed to a separate backend (another Provider, or DeepgramSpeech) per the
+    STT_PROVIDER / TTS_PROVIDER env vars. This is how any multi-vendor stack
+    (e.g. Groq LLM + OpenAI STT + Deepgram TTS) stays behind the one provider
+    interface the agent and servers already consume.
     """
 
-    def __init__(self, base, speech, *, use_stt: bool, use_tts: bool):
+    def __init__(self, base, *, stt=None, tts=None):
         self._base = base
-        self._speech = speech
-        self._use_stt = use_stt
-        self._use_tts = use_tts
-        # Name reflects which stages Deepgram actually handles (e.g. "groq+dg-stt").
-        stages = [label for label, on in (("dg-stt", use_stt), ("dg-tts", use_tts)) if on]
+        self._stt = stt    # None = STT stays on base
+        self._tts = tts    # None = TTS stays on base
+        # Name reflects who actually handles each stage (e.g. "groq+oai-stt+dg-tts").
+        stages = [
+            f"{_BACKEND_TAGS.get(backend.name, backend.name)}-{stage}"
+            for stage, backend in (("stt", stt), ("tts", tts))
+            if backend is not None
+        ]
         self.name = "+".join([base.name, *stages])
         # Mirror the base LLM attributes that telemetry / UI read via getattr.
         self.llm_model = base.llm_model
         self.tts_backend = getattr(base, "tts_backend", "provider")
         # Stage-model labels reflect who actually handles each stage.
-        self.stt_model = speech.stt_model if use_stt else getattr(base, "stt_model", "unknown")
-        self.tts_model = speech.tts_model if use_tts else getattr(base, "tts_model", "unknown")
-        self.tts_voice = speech.tts_voice if use_tts else getattr(base, "tts_voice", "unknown")
+        self.stt_model = getattr(stt or base, "stt_model", "unknown")
+        self.tts_model = getattr(tts or base, "tts_model", "unknown")
+        self.tts_voice = getattr(tts or base, "tts_voice", "unknown")
 
     def chat(self, messages, tools=None, tool_choice=None):
         return self._base.chat(messages, tools=tools, tool_choice=tool_choice)
 
     def chat_stream(self, messages, tools=None, tool_choice=None, on_delta=None):
-        # Deepgram has no LLM, so streaming stays on the base provider.
+        # Speech backends have no LLM, so streaming stays on the base provider.
         return self._base.chat_stream(
             messages, tools=tools, tool_choice=tool_choice, on_delta=on_delta,
         )
 
     def transcribe(self, pcm_int16, sample_rate: int = 16000):
-        target = self._speech if self._use_stt else self._base
-        return target.transcribe(pcm_int16, sample_rate)
+        return (self._stt or self._base).transcribe(pcm_int16, sample_rate)
 
     def transcribe_media(self, audio, content_type: str = ""):
-        target = self._speech if self._use_stt else self._base
-        return target.transcribe_media(audio, content_type)
+        return (self._stt or self._base).transcribe_media(audio, content_type)
 
     def synthesize(self, text, language=None):
-        # Deepgram TTS only when cloud TTS is active; TTS_BACKEND=system stays local.
+        # Override TTS only when cloud TTS is active; TTS_BACKEND=system stays local.
         # `language` lets Deepgram pick the native EN/ES voice per turn.
-        if self._use_tts and self.tts_backend == "provider":
-            return self._speech.synthesize(text, language)
+        if self._tts is not None and self.tts_backend == "provider":
+            return self._tts.synthesize(text, language)
         return self._base.synthesize(text, language)
 
     def voice_for(self, language=None):
-        """The voice the active TTS backend will use for `language` (for labels)."""
-        if self._use_tts and self.tts_backend == "provider":
-            resolve = getattr(self._speech, "voice_for", None)
+        """The voice the active TTS backend will use for `language` (for labels).
+        Deepgram resolves per-turn; a plain Provider backend has no voice_for and
+        falls back to its static tts_voice (already mirrored above)."""
+        if self._tts is not None and self.tts_backend == "provider":
+            resolve = getattr(self._tts, "voice_for", None)
             if resolve:
                 return resolve(language)
         return self.tts_voice
 
 
 def make_provider(name: str | None = None):
-    """Factory: MockProvider for PROVIDER=mock, else a live Provider  -  optionally
-    wrapped so STT_PROVIDER/TTS_PROVIDER=deepgram route those stages to Deepgram."""
+    """Factory: MockProvider for PROVIDER=mock, else a live Provider — optionally
+    wrapped so STT_PROVIDER/TTS_PROVIDER (deepgram|openai|groq) route those
+    stages to a different vendor than the base LLM."""
     name = (name or os.getenv("PROVIDER", "groq")).lower()
     if name == "mock":
         return MockProvider()  # overrides ignored: offline path stays key-free
 
     # Validate speech overrides BEFORE building anything (fail fast, no key needed).
+    allowed = {"deepgram", *PRESETS}
     stt_override = os.getenv("STT_PROVIDER", "").strip().lower()
     tts_override = os.getenv("TTS_PROVIDER", "").strip().lower()
     for label, value in (("STT_PROVIDER", stt_override), ("TTS_PROVIDER", tts_override)):
-        if value and value != "deepgram":
-            raise ValueError(f"Unknown {label}={value!r}; only 'deepgram' is supported")
-    use_stt = stt_override == "deepgram"
-    use_tts = tts_override == "deepgram"
+        if value and value not in allowed:
+            raise ValueError(f"Unknown {label}={value!r}; use one of {sorted(allowed)}")
+
+    # TTS_BACKEND=system routes all TTS to the local voice command, so a TTS
+    # override would never be used -- don't construct it (or demand its key).
+    if os.getenv("TTS_BACKEND", "provider").lower() != "provider":
+        tts_override = ""
 
     base = Provider(name)
-    if not (use_stt or use_tts):
-        return base
+    backends: dict[str, object] = {}  # one instance per distinct override vendor
 
-    from deepgram_speech import DeepgramSpeech  # lazy: only when actually selected
-    speech = DeepgramSpeech()
-    return SpeechOverrideProvider(base, speech, use_stt=use_stt, use_tts=use_tts)
+    def backend_for(override: str):
+        if not override or override == base.name:
+            return None  # stage follows the base provider (no-op override)
+        if override not in backends:
+            if override == "deepgram":
+                from deepgram_speech import DeepgramSpeech  # lazy: only when selected
+                backends[override] = DeepgramSpeech()
+            else:
+                # That vendor's API key is required at boot (Provider fails fast),
+                # matching DeepgramSpeech's key check. Client construction is
+                # local-only -- no network call, no billing.
+                backends[override] = Provider(override)
+        return backends[override]
+
+    stt, tts = backend_for(stt_override), backend_for(tts_override)
+    if stt is None and tts is None:
+        return base
+    return SpeechOverrideProvider(base, stt=stt, tts=tts)

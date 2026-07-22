@@ -3,15 +3,17 @@
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Packaged with uv](https://img.shields.io/badge/packaged%20with-uv-6340ac)
 ![LLM](https://img.shields.io/badge/LLM-OpenAI%20%7C%20Groq%20%7C%20offline%20mock-2ea44f)
+![Speech](https://img.shields.io/badge/speech-Deepgram%20%7C%20OpenAI%20%7C%20mix--and--match-0e8a64)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 **By [Taimoor Raza](https://github.com/tr049)**
 
-Vera is a production-shaped **voice AI agent** that handles hotel reservations end to end:
-it listens, books rooms, answers policy questions from a grounded knowledge base, switches
-between English and Spanish, and hands off to a human when needed. It runs **fully offline**
-against a deterministic mock, or **live** against OpenAI/Groq — and ships with a real-time
-browser demo, an evaluation harness, and capacity-planning tooling.
+Vera is a production-shaped **voice AI agent** that handles hotel reservations end to
+end: it listens, books rooms, answers policy questions from a grounded knowledge base,
+switches between English and Spanish mid-call — with a **native voice per language** —
+and hands off to a human when needed. It runs **fully offline** against a deterministic
+mock, or **live** against OpenAI / Groq / Deepgram in any per-stage combination, and
+ships with a real-time browser console, an evaluation harness, and capacity tooling.
 
 The core turn pipeline:
 
@@ -19,13 +21,33 @@ The core turn pipeline:
 caller audio → VAD / endpointing → STT → router → LLM + tools → RAG → TTS → reply
 ```
 
+## The console
+
+A real bilingual session in the **Vera Hotel Assistant** console: the caller books in
+English, barges in mid-answer, asks for the policies in Spanish — and Vera switches
+language *and* voice (`aura-2-luna-en → aura-2-celeste-es`) on the next reply.
+Live transcript, per-turn latency telemetry that fills **while the turn streams**
+(time-to-first-audio, barge-in reaction), a checkpoint pipeline trace, and VAD tuning —
+in an app-shell UI with light and dark themes.
+
+![Vera Hotel Assistant — bilingual live session (dark)](docs/screenshots/vera-web-dark.png)
+
+<details>
+<summary>Light theme</summary>
+
+![Vera Hotel Assistant — bilingual live session (light)](docs/screenshots/vera-web-light.png)
+
+</details>
+
 ## Highlights
 
 - **Runs with zero setup.** The offline mock (rule-based LLM, scripted STT, no-op TTS) needs no API key, no network, and no third-party packages — so the whole agent / tools / RAG / routing / eval stack is runnable and testable instantly.
 - **Provider-agnostic.** One OpenAI-dialect code path drives OpenAI, Groq, or the offline mock; switch with a single environment variable.
 - **Grounded and guarded.** Hotel-only guardrails, function-calling tools for availability and booking, and a local **SQLite FTS5** retriever for policies — with deterministic pre-routing so knowledge questions always reach retrieval.
-- **Bilingual.** Validated English/Spanish session state with matching TTS locale, changed only on an explicit request (never on an incidental foreign word).
-- **Real-time browser demo.** A LiveKit room with client-side VAD, adaptive noise calibration, and **playback barge-in** — speak over the agent to interrupt it.
+- **Bilingual with native voices.** Validated English/Spanish session state; an explicit request ("tell me in Spanish") switches **deterministically** — never on an incidental foreign word — and the TTS voice follows per language.
+- **Streaming cascade.** Opt-in low-latency mode: sentences play as they are synthesized (NDJSON over the existing POST), cutting time-to-first-audio; telemetry tiles fill live as each stage completes mid-turn.
+- **Per-stage speech routing.** `STT_PROVIDER` / `TTS_PROVIDER` mix vendors freely (e.g. Groq LLM + Deepgram STT + OpenAI TTS) with fail-fast key checks at boot.
+- **Real-time browser console.** A LiveKit room with client-side VAD, adaptive noise calibration, a live mic meter, and **playback barge-in** — speak over the agent to interrupt it.
 - **Observable.** Structured per-turn telemetry (stage latencies, tool I/O, retrieval sources) with **PII redaction on by default**.
 - **Tested and measured.** Deterministic behavioral + red-team suites, plus a capacity calculator that turns traffic assumptions into peak concurrency and cost.
 - **Telephony-aware.** SIP/IVR simulations map the agent's tool actions onto real call-control (`REFER` / `BYE`).

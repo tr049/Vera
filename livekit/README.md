@@ -1,6 +1,10 @@
 # Local LiveKit Voice Session
 
-This folder provides the room and browser stage of the Vera project. It runs against a self-contained LiveKit development server and does not require LiveKit Cloud credentials.
+This folder provides the room and browser stage of the Vera project — the **Vera Hotel
+Assistant** web console. It runs against a self-contained LiveKit development server and
+does not require LiveKit Cloud credentials.
+
+![Vera Hotel Assistant — browser console](../docs/screenshots/vera-web-dark.png)
 
 ## Install
 
@@ -35,7 +39,7 @@ The browser shows:
 - Playback barge-in with candidate pre-roll so the first interrupted word is retained
 - English and Spanish routing
 - RAG sources
-- STT, LLM, tool, server, first-audio, and interruption timing
+- STT, LLM, tool, TTS, server, first-audio, and interruption timing (tiles fill live as each stage completes mid-turn)
 - Adjustable endpoint silence and speech sensitivity
 
 Language state changes only after an explicit request that names the target

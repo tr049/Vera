@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Vera Voice Operations</title>
+    <title>Vera Hotel Assistant</title>
     <script>
       /* Theme: honour the saved choice before first paint (no FOUC); the OS
          preference drives it until the user overrides. Fully isolated from talk.js. */
@@ -24,7 +24,7 @@
           if (!btn) return;
           var sync = function () {
             var dark = current() === "dark";
-            btn.textContent = dark ? "☀️" : "\u{1F319}";
+            btn.textContent = dark ? "☀︎" : "☾︎";
             btn.setAttribute("aria-pressed", String(dark));
             btn.setAttribute("aria-label", dark ? "Switch to light mode" : "Switch to dark mode");
           };
@@ -35,101 +35,147 @@
             try { localStorage.setItem(KEY, next); } catch (e) {}
             sync();
           });
+          /* keep the icon honest if the OS scheme flips while no override is set */
+          window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", sync);
         });
       })();
     </script>
     <link rel="stylesheet" href="/web/styles.css" />
   </head>
   <body>
-    <main>
-      <header class="header">
-        <div>
-          <p class="eyebrow">Local LiveKit session</p>
-          <h1>Vera Voice Operations</h1>
+    <main class="app">
+      <aside class="side reveal" aria-label="Call controls and session">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div class="brand-copy">
+            <p class="wordmark">Vera</p>
+            <p class="brand-sub">Hotel Assistant</p>
+          </div>
         </div>
-        <div class="header-state">
-          <span class="status-pill pipeline-mode" id="pipeline-mode" data-mode="batch"
-                title="Response pipeline for the last turn. Batch = the whole reply is synthesized, then played. Streaming (server started with STREAMING=on + a live provider) = sentences play as they are generated, cutting time-to-first-audio.">
-            <span class="mode-dot"></span><span id="pipeline-mode-label">Batch cascade</span>
-          </span>
-          <span class="status-pill" id="language">English</span>
-          <span class="status-pill" id="provider">Provider: loading</span>
-          <span class="status-pill">vera-demo-room</span>
-          <button id="theme-toggle" class="theme-toggle" type="button"
-                  aria-label="Toggle dark mode" title="Toggle theme">🌙</button>
-        </div>
-      </header>
 
-      <section class="stage" aria-label="LiveKit call participants">
-        <article class="participant-card" data-client="caller">
-          <div class="card-top">
-            <div>
-              <p class="eyebrow">Caller</p>
-              <h2>Caller Demo</h2>
-            </div>
-            <span class="state" data-role="status">Ready</span>
-          </div>
-          <div class="waveform caller-wave" aria-hidden="true">
-            <span></span><span></span><span></span><span></span><span></span>
-          </div>
+        <div class="side-section">
+          <p class="side-label">Call</p>
           <div class="call-controls">
             <button id="start-call" type="button">Start call</button>
             <button id="mute-call" type="button" class="secondary" disabled>Mute</button>
             <button id="end-call" type="button" class="danger" disabled>End call</button>
           </div>
-        </article>
-
-        <article class="participant-card agent" data-client="agent">
-          <div class="card-top">
-            <div>
-              <p class="eyebrow">Voice agent</p>
-              <h2>Vera Agent</h2>
-            </div>
-            <span class="state" data-role="status">Waiting</span>
-          </div>
-          <div class="voice-orb" data-voice-state="idle" aria-hidden="true">
-            <span class="orb-glow"></span>
-            <span class="orb-ring r1"></span>
-            <span class="orb-ring r2"></span>
-            <span class="orb-ring r3"></span>
-            <span class="orb-core"></span>
-          </div>
-          <div class="waveform agent-wave" aria-hidden="true">
-            <span></span><span></span><span></span><span></span><span></span>
-          </div>
           <div id="voice-status" class="voice-status" role="status" aria-live="polite">Start the call, then speak naturally</div>
-        </article>
-      </section>
-
-      <section class="workspace">
-        <div class="conversation-column">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Conversation</p>
-              <h2>Live transcript</h2>
+          <div class="call-party" data-client="caller">
+            <div class="party-info">
+              <strong>Caller Demo</strong>
+              <span class="state" data-role="status">Ready</span>
             </div>
+            <div class="waveform caller-wave" title="Your live microphone level" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="side-section">
+          <div class="tuning">
+            <div class="tuning-heading">
+              <p class="side-label">Turn tuning</p>
+              <span id="vad-readout">Calibrating</span>
+            </div>
+            <label>
+              <span>Endpoint silence <strong id="endpoint-value">650 ms</strong></span>
+              <input id="endpoint-control" type="range" min="350" max="1200" step="50" value="650" />
+            </label>
+            <label>
+              <span>Speech sensitivity <strong id="sensitivity-value">3.2x</strong></span>
+              <input id="sensitivity-control" type="range" min="1.8" max="5" step="0.1" value="3.2" />
+            </label>
+          </div>
+        </div>
+
+        <div class="side-section">
+          <p class="side-label">Session</p>
+          <div class="session-rows">
+            <div class="session-row">
+              <span>Provider</span>
+              <strong id="provider">loading</strong>
+            </div>
+            <div class="session-row">
+              <span>Language</span>
+              <strong id="language">English</strong>
+            </div>
+            <div class="session-row">
+              <span>Room</span>
+              <strong>vera-demo-room</strong>
+            </div>
+            <div class="session-row participants-row">
+              <span>Peers</span>
+              <div id="participants" class="participants">
+                <div class="empty">Joins on call start</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="side-foot">
+          <span class="status-pill pipeline-mode" id="pipeline-mode" data-mode="batch"
+                title="Response pipeline for the last turn. Batch = the whole reply is synthesized, then played. Streaming (server started with STREAMING=on + a live provider) = sentences play as they are generated, cutting time-to-first-audio.">
+            <span class="mode-dot"></span><span id="pipeline-mode-label">Batch cascade</span>
+          </span>
+          <button id="theme-toggle" class="theme-toggle" type="button"
+                  aria-label="Toggle dark mode" title="Toggle theme">☾︎</button>
+        </div>
+      </aside>
+
+      <section class="center" aria-label="Stage and conversation">
+        <div class="stage reveal">
+          <div class="stage-copy">
+            <p class="stage-eyebrow">Hotel voice concierge</p>
+            <h1 class="stage-display">Vera</h1>
+            <p class="stage-tagline">Book a room, ask about check-in, switch to
+              Spanish — just speak. Interrupt her any time.</p>
+          </div>
+          <div class="stage-scene">
+            <div class="voice-orb" data-voice-state="idle" aria-hidden="true">
+              <span class="orb-glow"></span>
+              <span class="orb-ring r1"></span>
+              <span class="orb-ring r2"></span>
+              <span class="orb-ring r3"></span>
+              <span class="orb-core"></span>
+            </div>
+            <div class="call-party agent" data-client="agent">
+              <div class="party-info">
+                <strong>Vera</strong>
+                <span class="state" data-role="status">Waiting</span>
+              </div>
+              <div class="waveform agent-wave" aria-hidden="true">
+                <span></span><span></span><span></span><span></span><span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="conversation-column reveal">
+          <div class="section-heading">
+            <h2>Live transcript</h2>
             <span class="listening-state" id="listening-state" role="status" aria-live="polite">Idle</span>
           </div>
           <div id="transcript" class="transcript" role="log" aria-live="polite">
             <div class="empty">The call transcript will appear here.</div>
           </div>
           <div class="sources-block">
-            <p class="eyebrow">Grounding sources</p>
+            <p class="sources-label">Grounding sources</p>
             <div id="sources" class="sources">No retrieval used in the latest turn.</div>
           </div>
         </div>
+      </section>
 
-        <aside class="operations-column">
+      <aside class="rail" aria-label="Telemetry">
+        <div class="ops-card reveal">
           <div class="section-heading">
-            <div>
-              <p class="eyebrow">Turn telemetry</p>
-              <h2>Runtime trace</h2>
-            </div>
+            <h2>Runtime trace</h2>
           </div>
           <div class="metrics" aria-hidden="true">
             <div><span>STT</span><strong id="metric-stt">0 ms</strong></div>
             <div><span>LLM</span><strong id="metric-llm">0 ms</strong></div>
             <div><span>Tools</span><strong id="metric-tools">0 ms</strong></div>
+            <div title="Total speech-synthesis time for the turn. In streaming this sums every per-sentence synthesis, so it can exceed First audio — the caller is already listening while the rest is still being generated."><span>TTS</span><strong id="metric-tts">0 ms</strong></div>
             <div><span>Server</span><strong id="metric-total">0 ms</strong></div>
             <div title="End of turn → the first audio the caller hears. With STREAMING=on the first sentence plays as soon as it is synthesized (small); batch waits for the whole reply, so this tracks the Server total."><span>First audio</span><strong id="metric-first-audio">0 ms</strong></div>
             <div><span>Barge-in</span><strong id="metric-barge">0 ms</strong></div>
@@ -146,32 +192,8 @@
           <div id="events" class="events" aria-hidden="true">
             <div class="empty">Turn events will appear here.</div>
           </div>
-          <div class="tuning">
-            <div class="tuning-heading">
-              <p class="eyebrow">Turn tuning</p>
-              <span id="vad-readout">Calibrating</span>
-            </div>
-            <label>
-              <span>Endpoint silence <strong id="endpoint-value">650 ms</strong></span>
-              <input id="endpoint-control" type="range" min="350" max="1200" step="50" value="650" />
-            </label>
-            <label>
-              <span>Speech sensitivity <strong id="sensitivity-value">3.2x</strong></span>
-              <input id="sensitivity-control" type="range" min="1.8" max="5" step="0.1" value="3.2" />
-            </label>
-          </div>
-        </aside>
-      </section>
-
-      <section class="room-band">
-        <div>
-          <p class="eyebrow">Room state</p>
-          <h2>LiveKit participants</h2>
         </div>
-        <div id="participants" class="participants">
-          <div class="empty">Participants join when the call starts.</div>
-        </div>
-      </section>
+      </aside>
     </main>
 
     <script type="module" src="/web/talk.js"></script>

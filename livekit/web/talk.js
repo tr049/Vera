@@ -15,6 +15,12 @@ const muteButton = document.querySelector("#mute-call");
 const endButton = document.querySelector("#end-call");
 const participantsEl = document.querySelector("#participants");
 const providerEl = document.querySelector("#provider");
+const callerWaveEl = document.querySelector(".caller-wave");
+
+// Session card shows the provider label only (model/voice live in each bubble's meta).
+function renderSession(provider) {
+  providerEl.textContent = provider || "—";
+}
 const languageEl = document.querySelector("#language");
 const transcriptEl = document.querySelector("#transcript");
 const sourcesEl = document.querySelector("#sources");
@@ -32,27 +38,123 @@ const metrics = {
   stt: document.querySelector("#metric-stt"),
   llm: document.querySelector("#metric-llm"),
   tools: document.querySelector("#metric-tools"),
+  tts: document.querySelector("#metric-tts"),
   total: document.querySelector("#metric-total"),
   firstAudio: document.querySelector("#metric-first-audio"),
   barge: document.querySelector("#metric-barge"),
 };
 
+// A fresh turn clears the panel to a pending state ("—") so stale numbers from the
+// previous turn are never mistaken for this one. First audio fills MID-stream at the
+// first audible chunk; the rest fill from the trace when the turn completes. The
+// barge tile is preserved on a barge-in turn (it was stamped just before this turn).
+function resetTurnMetrics(preserveBarge = false) {
+  for (const [key, el] of Object.entries(metrics)) {
+    if (preserveBarge && key === "barge") continue;
+    setMetricValue(el, "—");
+  }
+  // Fresh turn: the pipeline rail restarts too. VAD relights immediately -- the
+  // endpoint that started this turn IS the VAD stage completing.
+  for (const stage of document.querySelectorAll("#pipeline [data-stage]")) {
+    stage.classList.toggle("complete", stage.dataset.stage === "vad");
+    stage.classList.toggle("active", stage.dataset.stage === "stt"); // STT is now in flight
+    stage.classList.remove("passed");
+  }
+}
+
+// Streaming events carry the server's running `timings` snapshot; fill whatever
+// stages have finished so the panel ticks along with the turn instead of jumping
+// all at once when `final` lands. Server total stays for the final trace.
+// Wipe all transient pipeline stage state (used on failure cleanups so a pulsing
+// .active node can't linger after a truncated/aborted turn until the next one).
+function clearPipelineState() {
+  for (const stage of document.querySelectorAll("#pipeline [data-stage]")) {
+    stage.classList.remove("active", "complete", "passed");
+  }
+}
+
+function syncPipelinePassed() {
+  const stages = [...document.querySelectorAll("#pipeline [data-stage]")];
+  const lastComplete = stages.reduce(
+    (last, stage, index) => (stage.classList.contains("complete") ? index : last), -1);
+  stages.forEach((stage, index) => {
+    stage.classList.toggle("passed",
+      index < lastComplete && !stage.classList.contains("complete"));
+  });
+}
+
+function applyPartialTimings(timings, inFlightHint) {
+  if (!timings) return;
+  const tiles = { stt: metrics.stt, llm: metrics.llm, tools: metrics.tools, tts: metrics.tts };
+  for (const [key, el] of Object.entries(tiles)) {
+    if (timings[key] !== undefined) setMetricValue(el, formatMs(timings[key]));
+  }
+  // inFlightHint (e.g. "tools" at a tool boundary) beats the guess -- otherwise an
+  // un-timed Tools stage would light TTS active while the tool is still running.
+  const inFlight = inFlightHint
+    || ["stt", "llm", "tts"].find((key) => timings[key] === undefined);
+  for (const stage of document.querySelectorAll("#pipeline [data-stage]")) {
+    if (timings[stage.dataset.stage] !== undefined) stage.classList.add("complete");
+    stage.classList.toggle("active", stage.dataset.stage === inFlight);
+  }
+  syncPipelinePassed();
+}
+
 const voiceOrb = document.querySelector(".voice-orb");
 
-// Flash a metric tile when its value changes -- self-contained, so the many
-// `metrics.*.textContent = ...` assignment sites need no edits. Reduced-motion
-// keeps the colour flash (CSS) and drops the translate.
-for (const metricEl of Object.values(metrics)) {
-  const tile = metricEl?.closest("div");
-  if (!tile) continue;
-  let last = metricEl.textContent;
-  new MutationObserver(() => {
-    if (metricEl.textContent === last) return; // don't flash on identical rewrites
-    last = metricEl.textContent;
-    tile.classList.remove("bump");
-    void tile.offsetWidth; // reflow so the animation restarts on every change
-    tile.classList.add("bump");
-  }).observe(metricEl, { childList: true, characterData: true, subtree: true });
+// Single chokepoint for every metric write: numeric values count up to their
+// target (Framer-style), the row flashes once, and identical rewrites no-op.
+// Replaces the old MutationObserver (a count-up would have re-triggered it
+// every frame). Reduced-motion: values just appear.
+const countupTimers = new WeakMap();
+
+// Typeset "2108 ms" as a mono numeral + a quiet small unit.
+function writeMetricText(el, text) {
+  let num = el.querySelector(".num");
+  if (!num) {
+    el.textContent = "";
+    num = document.createElement("span");
+    num.className = "num";
+    const unit = document.createElement("span");
+    unit.className = "unit";
+    el.append(num, unit);
+  }
+  const match = /^(\d+) ms$/.exec(text);
+  num.textContent = match ? match[1] : text;
+  el.querySelector(".unit").textContent = match ? "ms" : "";
+}
+
+function setMetricValue(el, text) {
+  if (!el || (el.dataset.value === text && !countupTimers.has(el))) return;
+  el.dataset.value = text;
+  const prev = countupTimers.get(el);
+  if (prev) cancelAnimationFrame(prev);
+  countupTimers.delete(el);
+  const row = el.closest("div");
+  if (row) {
+    row.classList.remove("bump");
+    void row.offsetWidth; // reflow so the flash restarts on every change
+    row.classList.add("bump");
+  }
+  const match = REDUCED_MOTION ? null : /^(\d+) ms$/.exec(text);
+  const target = match ? Number(match[1]) : NaN;
+  if (!match || !(target > 8)) {
+    writeMetricText(el, text);
+    return;
+  }
+  const started = performance.now();
+  const duration = Math.min(650, 260 + target / 40); // bigger numbers roll longer
+  const tick = (now) => {
+    const t = Math.min(1, (now - started) / duration);
+    const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+    writeMetricText(el, `${Math.round(target * eased)} ms`);
+    if (t < 1) {
+      countupTimers.set(el, requestAnimationFrame(tick));
+    } else {
+      countupTimers.delete(el);
+    }
+  };
+  countupTimers.set(el, requestAnimationFrame(tick));
 }
 
 // -- Motion (motion.dev, vendored + offline) for one-shot spring choreography.
@@ -70,14 +172,60 @@ if (!REDUCED_MOTION) {
     .then((motion) => {
       animate = motion.animate;
       stagger = motion.stagger;
-      animate("main > *", { y: [18, 0] },
+      animate(".reveal", { y: [18, 0] },
         { delay: stagger(0.05), duration: 0.5, ease: [0.05, 0.7, 0.1, 1] });
       window.setTimeout(() => {
-        document.querySelectorAll("main > *").forEach((el) =>
+        document.querySelectorAll(".reveal").forEach((el) =>
           el.getAnimations().forEach((a) => a.cancel()));
       }, 1200);
     })
     .catch(() => {}); // Motion unavailable -> no spring polish; the app still works
+}
+
+// Magnetic buttons: the call controls lean gently toward the cursor (max ~3px)
+// and spring back on leave. Pure transform, pointer-only, reduced-motion off.
+if (!REDUCED_MOTION && window.matchMedia("(pointer: fine)").matches) {
+  for (const btn of document.querySelectorAll(".call-controls button")) {
+    btn.addEventListener("pointermove", (event) => {
+      const box = btn.getBoundingClientRect();
+      const x = ((event.clientX - box.left) / box.width - 0.5) * 6;
+      const y = ((event.clientY - box.top) / box.height - 0.5) * 4;
+      btn.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+    });
+    btn.addEventListener("pointerleave", () => {
+      btn.style.transform = "";
+    });
+  }
+}
+
+// Pointer parallax: the orb scene drifts gently toward the cursor over the
+// stage (max ~7px), springing back on leave. Transform-only, pointer-only.
+{
+  const stageEl = document.querySelector(".stage");
+  const sceneEl = document.querySelector(".stage-scene");
+  if (!REDUCED_MOTION && stageEl && sceneEl
+      && window.matchMedia("(pointer: fine)").matches) {
+    stageEl.addEventListener("pointermove", (event) => {
+      const box = stageEl.getBoundingClientRect();
+      const x = ((event.clientX - box.left) / box.width - 0.5) * 14;
+      const y = ((event.clientY - box.top) / box.height - 0.5) * 10;
+      sceneEl.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+    });
+    stageEl.addEventListener("pointerleave", () => {
+      sceneEl.style.transform = "";
+    });
+  }
+}
+
+// Cursor-following glow on the glass panels (CSS reads --mx/--my).
+if (!REDUCED_MOTION && window.matchMedia("(pointer: fine)").matches) {
+  for (const panel of document.querySelectorAll(".ops-card, .conversation-column, .side")) {
+    panel.addEventListener("pointermove", (event) => {
+      const box = panel.getBoundingClientRect();
+      panel.style.setProperty("--mx", `${(event.clientX - box.left).toFixed(0)}px`);
+      panel.style.setProperty("--my", `${(event.clientY - box.top).toFixed(0)}px`);
+    });
+  }
 }
 
 // Spring a newly-inserted transcript bubble in (side-aware). Reduced-motion:
@@ -124,7 +272,6 @@ let muted = false;
 let noiseFloor = 0.008;
 let smoothedLevel = 0;
 let discardRecording = false;
-let currentTrace = null;
 let lastEndpointAt = 0;
 let playbackStartedAt = 0;
 let playbackEchoFloor = 0.012;
@@ -197,8 +344,28 @@ const VOICE_ORB_STATE = {
 
 function setListeningState(state, detail) {
   listeningStateEl.textContent = state;
+  listeningStateEl.dataset.state = VOICE_ORB_STATE[state] || "idle"; // party colour on the pill
   voiceStatusEl.textContent = detail;
   if (voiceOrb) voiceOrb.dataset.voiceState = VOICE_ORB_STATE[state] || "idle";
+}
+
+// Landmark trace rows (first audio, barge-in, endpoint) carry the console accent;
+// the rest of the timestamp gutter stays subordinate ink.
+function isLandmarkEvent(name) {
+  return /first_audio|barge|endpoint/.test(name);
+}
+
+function setBubbleLabel(labelEl, who, meta) {
+  labelEl.textContent = "";
+  const speaker = document.createElement("span");
+  speaker.textContent = who;
+  labelEl.appendChild(speaker);
+  if (meta) {
+    const metaEl = document.createElement("span");
+    metaEl.className = "meta";
+    metaEl.textContent = meta;
+    labelEl.appendChild(metaEl);
+  }
 }
 
 function addTranscript(role, text, meta = "") {
@@ -207,7 +374,7 @@ function addTranscript(role, text, meta = "") {
   item.className = `bubble ${role}`;
   const label = document.createElement("div");
   label.className = "bubble-label";
-  label.textContent = `${role === "caller" ? "Caller Demo" : "Vera Agent"}${meta ? ` | ${meta}` : ""}`;
+  setBubbleLabel(label, role === "caller" ? "Caller Demo" : "Vera Agent", meta);
   const body = document.createElement("div");
   body.textContent = text;
   item.append(label, body);
@@ -240,23 +407,27 @@ function eventDetail(event) {
 }
 
 function renderTrace(trace) {
-  currentTrace = trace;
   const timings = trace.timings || {};
-  metrics.stt.textContent = formatMs(timings.stt);
-  metrics.llm.textContent = formatMs(timings.llm);
-  metrics.tools.textContent = formatMs(timings.tools);
-  metrics.total.textContent = formatMs(trace.totalMs);
+  setMetricValue(metrics.stt, formatMs(timings.stt));
+  setMetricValue(metrics.llm, formatMs(timings.llm));
+  setMetricValue(metrics.tools, formatMs(timings.tools));
+  // Total synthesis time -- in streaming this is the SUM of every per-sentence
+  // synthesize() span (telemetry accumulates same-name spans), not just the first.
+  setMetricValue(metrics.tts, formatMs(timings.tts));
+  setMetricValue(metrics.total, formatMs(trace.totalMs));
 
   for (const element of pipelineEl.querySelectorAll("[data-stage]")) {
     const stage = element.dataset.stage;
     const completed = stage === "vad" || timings[stage] !== undefined;
     element.classList.toggle("complete", completed);
+    element.classList.remove("active"); // turn finished -- nothing is in flight
   }
+  syncPipelinePassed();
 
   eventsEl.innerHTML = "";
   for (const event of (trace.events || []).slice(-14)) {
     const row = document.createElement("div");
-    row.className = "event-row";
+    row.className = isLandmarkEvent(event.name) ? "event-row landmark" : "event-row";
     const time = document.createElement("time");
     time.textContent = `+${Math.round(event.offsetMs)}ms`;
     const detail = document.createElement("span");
@@ -269,7 +440,7 @@ function renderTrace(trace) {
 function appendRuntimeEvent(name) {
   eventsEl.querySelector(".empty")?.remove();
   const row = document.createElement("div");
-  row.className = "event-row";
+  row.className = isLandmarkEvent(name) ? "event-row landmark" : "event-row";
   const time = document.createElement("time");
   time.textContent = "client";
   const detail = document.createElement("span");
@@ -280,9 +451,17 @@ function appendRuntimeEvent(name) {
 }
 
 function renderSources(sources) {
-  sourcesEl.textContent = sources?.length
-    ? sources.join(" | ")
-    : "No retrieval used in the latest turn.";
+  sourcesEl.textContent = "";
+  if (!sources?.length) {
+    sourcesEl.textContent = "No retrieval used in the latest turn.";
+    return;
+  }
+  for (const source of sources) {
+    const chip = document.createElement("span");
+    chip.className = "source-chip";
+    chip.textContent = source;
+    sourcesEl.appendChild(chip);
+  }
 }
 
 function chooseVoice(locale) {
@@ -376,7 +555,7 @@ function beginAgentPlayback(token, backend) {
   appendRuntimeEvent(`tts.playback_started | ${backend}`);
   if (lastEndpointAt) {
     const firstAudioMs = Date.now() - lastEndpointAt;
-    metrics.firstAudio.textContent = formatMs(firstAudioMs);
+    setMetricValue(metrics.firstAudio, formatMs(firstAudioMs));
     appendRuntimeEvent(`turn.first_audio | ${formatMs(firstAudioMs)}`);
     lastEndpointAt = 0;
   }
@@ -446,7 +625,7 @@ function interruptAgent(detectedAt, turnAlreadyRecording = false) {
   pendingBargeInTurn = !turnAlreadyRecording;
   addInterruption();
   appendRuntimeEvent("barge_in.detected");
-  metrics.barge.textContent = formatMs(Date.now() - detectedAt);
+  setMetricValue(metrics.barge, formatMs(Date.now() - detectedAt));
   setListeningState("Interrupted", "Vera stopped. Listening to the caller.");
 }
 
@@ -517,7 +696,7 @@ function renderIgnoredTurn(payload, refs) {
   renderTrace(payload.trace);
   // Nothing played on a suppressed turn -- clear First audio so the row isn't this
   // turn's STT/LLM next to a PRIOR turn's first-audio latency.
-  metrics.firstAudio.textContent = "—";
+  setMetricValue(metrics.firstAudio, "—");
   renderSources([]);
   agentBusy = false;
   setListeningState("Listening", "Playback echo was suppressed. Continue speaking naturally.");
@@ -538,7 +717,7 @@ function renderFinalTurn(payload, refs) {
     .filter(Boolean)
     .join(" | ");
   addTranscript("agent", payload.reply, meta);
-  providerEl.textContent = `Provider: ${payload.provider} | ${payload.model} | ${ttsMeta}`;
+  renderSession(payload.provider);
   languageEl.textContent = payload.language === "es" ? "Spanish" : "English";
   setPipelineMode(payload.pipeline);
   renderSources(payload.sources);
@@ -560,14 +739,15 @@ async function consumeVoiceStream(response, refs) {
 
   const handleEvent = (event) => {
     if (event.type === "transcript") {
+      applyPartialTimings(event.timings); // STT just completed server-side
       // Fill the caller placeholder IN PLACE. Removing it and re-adding via
       // addTranscript() would append the real transcript at the BOTTOM of the
       // thread -- below the agent "Processing turn" bubble that already exists --
       // so the reply would render above the caller until `final` reordered them.
       refs.transcriptShown = true;
       if (refs.voicePlaceholder) {
-        refs.voicePlaceholder.querySelector(".bubble-label").textContent =
-          `Caller Demo | STT: ${event.sttModel}`;
+        setBubbleLabel(refs.voicePlaceholder.querySelector(".bubble-label"),
+          "Caller Demo", `STT: ${event.sttModel}`);
         refs.voicePlaceholder.querySelector("div:last-child").textContent = event.transcript;
         refs.voicePlaceholder.removeAttribute("aria-hidden"); // real transcript -> announce it
         // Keep a handle to the now-real caller bubble: voicePlaceholder is nulled so
@@ -579,6 +759,7 @@ async function consumeVoiceStream(response, refs) {
         addTranscript("caller", event.transcript, `STT: ${event.sttModel}`);
       }
     } else if (event.type === "sentence") {
+      applyPartialTimings(event.timings); // tts accumulates; llm/tools once closed
       refs.streamedText = refs.streamedText ? `${refs.streamedText} ${event.text}` : event.text;
       if (refs.pending) {
         refs.pending.querySelector("div:last-child").textContent = refs.streamedText;
@@ -588,6 +769,7 @@ async function consumeVoiceStream(response, refs) {
         token,
       );
     } else if (event.type === "reset") {
+      applyPartialTimings(event.timings, "tools"); // tool boundary: Tools is now in flight
       // Tool boundary/degrade: queued-but-unplayed preamble audio is stale. Reset the
       // playback-progress flags too so the post-tool reply is treated as a FRESH segment
       // -- otherwise a played preamble leaves playedAny=true and the real reply's
@@ -653,6 +835,7 @@ async function consumeVoiceStream(response, refs) {
     appendRuntimeEvent("stream.truncated");
     refs.pending?.remove();
     refs.voicePlaceholder?.remove();
+    clearPipelineState();
     agentBusy = false;
     // Close out playback state so agentSpeaking can't stay stuck true (which
     // would leave the VAD in barge-mode forever).
@@ -684,6 +867,8 @@ async function sendAudioToAgent(audioBlob) {
   const turnId = `turn-${++turnCounter}`;
   const wasBargeIn = currentTurnWasBargeIn;
   currentTurnWasBargeIn = false;
+  // Fresh turn -> clear the telemetry panel now, not when the turn completes.
+  resetTurnMetrics(wasBargeIn);
   activeTurnAbort = new AbortController();
 
   try {
@@ -730,9 +915,14 @@ async function sendAudioToAgent(audioBlob) {
       // the sentences the caller already HEARD in the transcript instead of
       // erasing them (the agent's history keeps the full reply server-side).
       if (refs.pending && refs.streamedText) {
-        refs.pending.querySelector(".bubble-label").textContent += " | interrupted";
+        const label = refs.pending.querySelector(".bubble-label");
+        const flag = document.createElement("span");
+        flag.className = "meta";
+        flag.textContent = "interrupted";
+        label.appendChild(flag); // preserves the speaker/meta span structure
         refs.pending = null;
       }
+      clearPipelineState();
       refs.pending?.remove();
       refs.voicePlaceholder?.remove();
       appendRuntimeEvent("turn.aborted");
@@ -759,12 +949,16 @@ function vadLoop() {
   smoothedLevel = (smoothedLevel * 0.72) + (rawLevel * 0.28);
   const limit = thresholds();
 
-  // Feed the already-EMA-smoothed level to the orb so "listening" scales with the
-  // caller's voice. Only written while actually listening (the sole state that
-  // consumes --level), avoiding a per-frame DOM write the rest of the time.
+  // Live mic meter: written every frame while the call is up (a real-time input
+  // indicator, so it stays honest even during agent playback) -- one compositor
+  // custom-property write, no layout.
+  const micLevel = Math.min(1, smoothedLevel / (limit.start || 0.02)).toFixed(3);
+  if (callerWaveEl) {
+    callerWaveEl.style.setProperty("--mic", micLevel);
+  }
+  // The orb only consumes --level while "listening", so write it only then.
   if (voiceOrb && voiceOrb.dataset.voiceState === "listening") {
-    voiceOrb.style.setProperty(
-      "--level", Math.min(1, smoothedLevel / (limit.start || 0.02)).toFixed(3));
+    voiceOrb.style.setProperty("--level", micLevel);
   }
 
   if (!recorder && !agentSpeaking && !agentBusy && smoothedLevel < limit.start) {
@@ -861,7 +1055,8 @@ function renderParticipants() {
   const participants = [callerRoom.localParticipant, ...callerRoom.remoteParticipants.values()];
   for (const participant of participants) {
     const row = document.createElement("div");
-    row.className = "participant";
+    const party = /caller/i.test(participant.identity || participant.name || "") ? "caller" : "agent";
+    row.className = `participant ${party}`;
     const name = document.createElement("strong");
     name.textContent = participant.name || participant.identity;
     const state = document.createElement("span");
@@ -901,7 +1096,7 @@ async function startCall() {
   // Fresh call: clear per-turn latency state so the greeting/first turn can't display a
   // prior call's First audio, and a leftover endpoint stamp can't skew the next metric.
   lastEndpointAt = 0;
-  for (const el of Object.values(metrics)) el.textContent = "0 ms";
+  for (const el of Object.values(metrics)) setMetricValue(el, "0 ms");
   languageEl.textContent = "English"; // reset agent starts in English; don't show prior call's language
   agentBusy = true;
   callerStatus.textContent = "Connecting";
@@ -927,7 +1122,7 @@ async function startCall() {
     const ttsMeta = greeting.ttsBackend === "provider"
       ? `TTS: ${greeting.ttsVoice || greeting.ttsModel}`
       : "Browser TTS";
-    providerEl.textContent = `Provider: ${greeting.provider} | ${greeting.model} | ${ttsMeta}`;
+    renderSession(greeting.provider);
     setPipelineMode(greeting.pipeline);
     renderTrace(greeting.trace);
     agentBusy = false;
@@ -994,9 +1189,9 @@ async function loadState() {
   try {
     const response = await fetch("/state");
     const state = await response.json();
-    providerEl.textContent = `Provider: ${state.agentProvider}`;
+    renderSession(state.agentProvider);
   } catch {
-    providerEl.textContent = "Provider: unavailable";
+    renderSession("unavailable");
   }
 }
 

@@ -56,6 +56,50 @@ class RouterTests(unittest.TestCase):
             [event["name"] for event in english_trace.events],
         )
 
+    def test_polite_phrasing_forces_deterministic_language_switch(self):
+        # "Could you please tell me in english" must flip the router even when the
+        # LLM would not have called set_language on its own -- the switch is FORCED
+        # as the first tool call (live models sometimes just answer in English).
+        agent = Agent(make_provider("mock"))
+        agent.respond("Can you please speak in Spanish?",
+                      trace=TurnTrace(session_id="test", turn_id="to-es"))
+        self.assertEqual(agent.current_language, "es")
+        trace = TurnTrace(session_id="test", turn_id="back-to-en")
+        agent.respond("Could you please tell me in english", trace=trace)
+        self.assertEqual(agent.current_language, "en")
+        routed = [event["attributes"] for event in trace.events
+                  if event["name"] == "tool.route_selected"]
+        self.assertEqual(routed[0]["tool"], "set_language")
+        self.assertEqual(routed[0]["reason"], "explicit_language_request")
+
+    def test_language_switch_requires_a_switch_cue_not_a_bare_mention(self):
+        # requested_language_switch must fire only on directional intent, never on a
+        # bare language name -- otherwise an in-scope question or a negation gets
+        # hijacked into a wrong-way switch (regression the pre-ship audit caught).
+        from agent import requested_language_switch
+        # positive: real switch cues carry their own target
+        self.assertEqual(requested_language_switch("please tell me in Spanish", "en"), "es")
+        self.assertEqual(requested_language_switch("could you speak English again", "es"), "en")
+        self.assertEqual(requested_language_switch("háblame en español", "en"), "es")
+        # negative: bare mentions / questions must NOT switch
+        self.assertIsNone(requested_language_switch(
+            "Do you have Spanish-speaking staff at the front desk?", "en"))
+        self.assertIsNone(requested_language_switch("I do not want Spanish", "en"))
+        self.assertIsNone(requested_language_switch("Is English breakfast included?", "es"))
+        # already in the requested language -> no-op
+        self.assertIsNone(requested_language_switch("please continue in English", "en"))
+
+    def test_bare_language_mention_does_not_hijack_an_in_scope_question(self):
+        # End-to-end: an English question that merely contains "Spanish" stays in
+        # English and is answered, not force-switched to Spanish.
+        agent = Agent(make_provider("mock"))
+        trace = TurnTrace(session_id="test", turn_id="staff-q")
+        agent.respond("Do you have Spanish-speaking staff at the front desk?", trace=trace)
+        self.assertEqual(agent.current_language, "en")
+        routed = [event["attributes"].get("tool") for event in trace.events
+                  if event["name"] == "tool.route_selected"]
+        self.assertNotIn("set_language", routed)
+
     def test_language_change_requires_explicit_target_name(self):
         self.assertTrue(explicit_language_request("Switch back to English", "en"))
         self.assertTrue(explicit_language_request("Por favor, habla español", "es"))

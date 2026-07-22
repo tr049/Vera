@@ -275,6 +275,47 @@ def required_tool_for(text: str) -> str | None:
     return None
 
 
+# Switch CUES: an imperative/directional phrase pointing AT a language. Unlike
+# a bare name mention ("Spanish-speaking staff", "I don't want Spanish"), a cue
+# expresses intent to change, and carries the target itself. Accent-stripped, so
+# "en español"/"habla inglés" match. Mirrors required_tool_for's qualified phrasing.
+_LANGUAGE_SWITCH_CUES = {
+    "en": (
+        "in english", "to english", "into english", "speak english",
+        "english please", "english again", "respond in english", "reply in english",
+        "answer in english", "continue in english", "en ingles", "habla ingles",
+        "hable ingles", "hablar en ingles", "dime en ingles",
+    ),
+    "es": (
+        "in spanish", "to spanish", "into spanish", "speak spanish",
+        "spanish please", "spanish again", "respond in spanish", "reply in spanish",
+        "answer in spanish", "continue in spanish", "en espanol", "habla espanol",
+        "hable espanol", "hablar en espanol", "dime en espanol", "espanol por favor",
+    ),
+}
+
+
+def requested_language_switch(text: str, current: str) -> str | None:
+    """The language the caller explicitly asked to SWITCH TO, or None.
+
+    Forces set_language as the first tool call for an unambiguous request, instead
+    of leaving it to the LLM's probabilistic tool choice -- live models sometimes
+    just answer in the requested language without calling the tool, leaving the
+    router (and the TTS voice) stuck. Gated on a switch CUE, not a bare name: a
+    mention like "Spanish newspapers" or "I don't want Spanish" carries no cue and
+    defers to the model, so an in-scope question is never hijacked into a switch.
+    """
+    # Space-pad so cues match on WORD boundaries ("auto english" must not match
+    # "to english"; "when espanol" must not match "en espanol").
+    padded = f" {' '.join(_normalized_tokens(text))} "
+    matched = [
+        lang for lang, cues in _LANGUAGE_SWITCH_CUES.items()
+        if lang != current and any(f" {cue} " in padded for cue in cues)
+    ]
+    # EN/ES only, so at most one target can differ from current.
+    return matched[0] if len(matched) == 1 else None
+
+
 def _named_tool_choice(name: str) -> dict:
     return {"type": "function", "function": {"name": name}}
 
@@ -471,11 +512,19 @@ class Agent:
         self.messages.append({"role": "user", "content": user_text})
         action: str | None = None
         required_tool = required_tool_for(user_text)
+        route_reason = "hotel_knowledge_intent"
+        # An explicit "switch to <language>" outranks the knowledge route: the
+        # set_language result loops back through the model, so a combined ask
+        # ("tell me the pet policy in English") still reaches retrieval next.
+        switch_to = requested_language_switch(user_text, self.router.language)
+        if switch_to:
+            required_tool = "set_language"
+            route_reason = "explicit_language_request"
         if required_tool:
             trace.event(
                 "tool.route_selected",
                 tool=required_tool,
-                reason="hotel_knowledge_intent",
+                reason=route_reason,
             )
         first_model_call = True
 

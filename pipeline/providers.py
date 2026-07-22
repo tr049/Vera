@@ -342,6 +342,18 @@ class MockProvider:
         forced_tool = _tool_choice_name(tool_choice)
         if forced_tool == "search_hotel_knowledge" and last.get("role") == "user":
             return _mk_tool(forced_tool, {"query": last.get("content") or ""})
+        if forced_tool == "set_language" and last.get("role") == "user":
+            # The router already decided to switch; emit the non-current language it
+            # named. Accent-stripped tokens so "español"/"inglés" match; falls back to
+            # the current language if (somehow) neither name is present.
+            current = "es" if "Current response language: Spanish" in messages[0].get("content", "") else "en"
+            other = "en" if current == "es" else "es"
+            decomposed = unicodedata.normalize("NFKD", (last.get("content") or "").lower())
+            tokens = set(re.findall(r"[a-z0-9]+",
+                                    "".join(c for c in decomposed if not unicodedata.combining(c))))
+            named = {"en": {"english", "ingles"}, "es": {"spanish", "espanol"}}
+            target = other if tokens & named[other] else current
+            return _mk_tool("set_language", {"language": target})
         # After a tool ran, speak a reply built from its result.
         if last.get("role") == "tool":
             result = last["content"]

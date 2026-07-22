@@ -493,5 +493,97 @@ class BargeInEchoTests(unittest.TestCase):
         self.assertEqual(transcript, "Thanks")
 
 
+class SessionRegistryTests(unittest.TestCase):
+    """LRU eviction bounds the per-X-Session-ID Agent registry; an in-flight
+    session (lock held) is never evicted."""
+
+    def setUp(self):
+        import talk_server
+        self.ts = talk_server
+        self._saved = (dict(talk_server._agent_sessions),
+                       dict(talk_server._session_locks), talk_server.MAX_SESSIONS)
+        talk_server._agent_sessions.clear()
+        talk_server._session_locks.clear()
+
+    def tearDown(self):
+        self.ts._agent_sessions.clear()
+        self.ts._agent_sessions.update(self._saved[0])
+        self.ts._session_locks.clear()
+        self.ts._session_locks.update(self._saved[1])
+        self.ts.MAX_SESSIONS = self._saved[2]
+
+    def test_lru_eviction_bounds_the_registry(self):
+        from unittest.mock import patch
+        with patch.object(self.ts, "_new_agent", lambda: object()), \
+                patch.object(self.ts, "MAX_SESSIONS", 3):
+            for i in range(6):
+                self.ts._get_session(f"s{i}")
+            self.assertLessEqual(len(self.ts._agent_sessions), 3)
+            self.assertNotIn("s0", self.ts._agent_sessions)  # oldest evicted
+            self.assertIn("s5", self.ts._agent_sessions)     # newest kept
+
+    def test_in_flight_session_is_never_evicted(self):
+        from unittest.mock import patch
+        with patch.object(self.ts, "_new_agent", lambda: object()), \
+                patch.object(self.ts, "MAX_SESSIONS", 2):
+            _agent, lock = self.ts._get_session("busy")
+            lock.acquire()  # a turn is in flight
+            try:
+                for i in range(4):
+                    self.ts._get_session(f"s{i}")
+                self.assertIn("busy", self.ts._agent_sessions)
+            finally:
+                lock.release()
+
+
+class RequestGuardTests(unittest.TestCase):
+    """_read_length bounds/validates Content-Length, and the static handler
+    resolves traversal attempts to a non-source path (source-disclosure fix)."""
+
+    def _handler(self):
+        import http.client
+
+        from talk_server import Handler
+        h = Handler.__new__(Handler)
+        h.headers = http.client.HTTPMessage()
+        h.sent = []
+        h._send_json = lambda payload, status=200: h.sent.append((status, payload))
+        return h
+
+    def test_valid_content_length_accepted(self):
+        h = self._handler()
+        h.headers["Content-Length"] = "2048"
+        self.assertEqual(h._read_length(), 2048)
+        self.assertEqual(h.sent, [])
+
+    def test_oversized_content_length_rejected_413(self):
+        h = self._handler()
+        h.headers["Content-Length"] = str(999_000_000)
+        self.assertIsNone(h._read_length())
+        self.assertEqual(h.sent[0][0], 413)
+
+    def test_nonnumeric_content_length_rejected_400(self):
+        h = self._handler()
+        h.headers["Content-Length"] = "not-a-number"
+        self.assertIsNone(h._read_length())
+        self.assertEqual(h.sent[0][0], 400)
+
+    def test_traversal_cannot_escape_the_web_root(self):
+        import os
+
+        from talk_server import ROOT, Handler
+        h = Handler.__new__(Handler)
+        h.directory = str(ROOT)
+        real_source = os.path.realpath(os.path.join(str(ROOT), "talk_server.py"))
+        # "/web/../talk_server.py" -- normpath collapses it out of /web/ -- must NOT
+        # resolve to the real source file.
+        escaped = os.path.realpath(h.translate_path("/web/../talk_server.py"))
+        self.assertNotEqual(escaped, real_source)
+        # a legit asset still resolves under web/
+        web_root = os.path.realpath(os.path.join(str(ROOT), "web"))
+        legit = os.path.realpath(h.translate_path("/web/index.html"))
+        self.assertTrue(legit.startswith(web_root + os.sep))
+
+
 if __name__ == "__main__":
     unittest.main()

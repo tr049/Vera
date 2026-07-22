@@ -482,9 +482,27 @@ def _token(identity: str, name: str, room: str) -> str:
     )
 
 
+_STATIC_ROOTS = tuple(
+    os.path.realpath(os.path.join(str(ROOT), sub)) for sub in ("web", "node_modules")
+)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def translate_path(self, path):
+        # Containment check on the RESOLVED path. The do_GET prefix gate inspects the
+        # raw URL, but SimpleHTTPRequestHandler.translate_path runs posixpath.normpath
+        # first, which collapses "/web/../talk_server.py" to "/talk_server.py" and
+        # escapes the /web/ prefix. Serve only files under web/ or node_modules/.
+        resolved = os.path.realpath(super().translate_path(path))
+        if any(resolved == root or resolved.startswith(root + os.sep)
+               for root in _STATIC_ROOTS):
+            return resolved
+        # A stable, nonexistent path (no NUL) so send_head cleanly 404s rather than
+        # raising on the open().
+        return os.path.join(str(ROOT), "web", "__vera_forbidden__")
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -499,10 +517,11 @@ class Handler(SimpleHTTPRequestHandler):
                 "languages": ["en", "es"],
             })
         if parsed.path != "/token":
-            # Only static assets under /web/ are served. The handler's directory is the
+            # Only static assets under /web/ and /node_modules/ are served (talk.js
+            # imports livekit-client from /node_modules/). The handler's directory is the
             # livekit/ root, so an unrestricted GET would expose /.env and /talk_server.py
             # (SimpleHTTPRequestHandler filters '..' but NOT dotfiles) to any client.
-            if parsed.path.startswith("/web/"):
+            if parsed.path.startswith(("/web/", "/node_modules/")):
                 return super().do_GET()
             return self.send_error(404)
 

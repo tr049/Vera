@@ -366,6 +366,27 @@ class StreamingVoiceAgentTests(unittest.TestCase):
         self.assertEqual(sentences[0]["audioBase64"], "")   # first sentence's TTS failed
         self.assertTrue(sentences[1]["audioBase64"])         # second carried the first audio
 
+    def test_streaming_events_carry_progressive_timings(self):
+        # transcript/sentence events include the server's RUNNING timings snapshot so
+        # the client fills metric tiles during the stream (not only at `final`):
+        # stt is present from the transcript event on, and tts accumulates per sentence.
+        provider = self._StreamProvider()
+        session = self._session(
+            provider, ["Sure. ", "We have a king. "],
+            reply="Sure. We have a king.",
+        )
+        events, final = self._run(session)
+
+        transcript = events[0]
+        self.assertIn("stt", transcript["timings"])
+        sentences = [e for e in events if e["type"] == "sentence"]
+        self.assertIn("tts", sentences[0]["timings"])
+        self.assertGreaterEqual(
+            sentences[1]["timings"]["tts"], sentences[0]["timings"]["tts"],
+        )
+        # `total` never appears mid-stream -- the Server tile is final-only.
+        self.assertNotIn("total", sentences[0]["timings"])
+
     def test_gate_stays_batch_when_streaming_off_or_incapable(self):
         import os
         from unittest.mock import patch

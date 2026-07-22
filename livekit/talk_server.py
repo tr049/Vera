@@ -336,6 +336,9 @@ def _stream_voice_agent_reply(
             "type": "transcript",
             "transcript": transcript,
             "sttModel": getattr(agent.provider, "stt_model", "unknown"),
+            # Stage timings known SO FAR (stt is complete here) -- the client fills
+            # its telemetry tiles progressively instead of waiting for `final`.
+            "timings": dict(trace.timings),
         }):
             state["client_gone"] = True  # client already left: skip all TTS spend
 
@@ -364,6 +367,9 @@ def _stream_voice_agent_reply(
                 "text": sentence,
                 "audioBase64": audio_b64,
                 "audioContentType": "audio/wav",
+                # Running snapshot: tts accumulates per sentence; llm/tools appear
+                # once their spans close (post-tool sentences carry them).
+                "timings": dict(trace.timings),
             })
             state["seq"] += 1
             if not ok:
@@ -378,7 +384,8 @@ def _stream_voice_agent_reply(
             state["spoke"] = False
             state["segment"] += 1
             if not state["client_gone"]:
-                if not emit({"type": "reset", "segment": state["segment"]}):
+                if not emit({"type": "reset", "segment": state["segment"],
+                             "timings": dict(trace.timings)}):
                     state["client_gone"] = True
 
         try:
